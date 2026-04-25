@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Federated_Learning_for_medical_data"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10" 
+authors = [
+    { name = "Ruben Diaz", email = "rubendm04@gmail.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "syft",
+    "sniffio",
+    "datasets",
+    "numpy<2.0.0", # Bloqueamos NumPy < 2.0 por compatibilidad con PySyft
+    "pandas",
+    "requests",
+    "tqdm"
+]
+
+
+# Configuración para la herramienta setuptools para que encuentre código
+[tool.setuptools.packages.find]
+where = ["."]  # Busca paquetes en el directorio actual

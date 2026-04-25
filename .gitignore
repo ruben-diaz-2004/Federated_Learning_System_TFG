@@ -1,0 +1,5 @@
+*.png
+*.csv
+datos_base/
+*.pyc
+*.pth
