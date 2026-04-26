@@ -21,6 +21,8 @@ dependencies = [
     "syft",
     "sniffio",
     "datasets",
+    "scikit-learn",
+    "adversarial-robustness-toolbox",
     "numpy<2.0.0", # Bloqueamos NumPy < 2.0 por compatibilidad con PySyft
     "pandas",
     "requests",

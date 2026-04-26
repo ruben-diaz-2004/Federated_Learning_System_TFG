@@ -125,7 +125,7 @@ def main():
         import traceback
 
         try:
-            from data_preprocessing import Data_Preprocessing
+            from workdir.src.modules.data_preprocessing import Data_Preprocessing
 
             actual_path  = raw_data_dict["path"]
             preprocessor = Data_Preprocessing(

@@ -130,7 +130,7 @@ class HFTransform:
 # ──────────────────────────────────────────────
 # División train / val / test sobre HF dataset
 # ──────────────────────────────────────────────
-def split_dataset(hf_dataset, train_ratio=0.70, val_ratio=0.10, seed=SEED):
+def split_dataset(hf_dataset, train_ratio=1.0, val_ratio=0.10, seed=SEED):
     """
     Divide un HuggingFace dataset en train, val, test de forma reproducible.
     train_ratio : fracción total para train+val  (0.70)
@@ -277,20 +277,23 @@ def main():
 
     # ── 1. Cargar dataset base con Data_Preprocessing ──
     print("\n── Cargando dataset con Data_Preprocessing ──")
-    data_path=Path('../../rimone_A')
+    data_path=Path('C:\\Users\\ruben\\Desktop\\TFG\\workdir\\rimone_A')
     batch_size=32
     preprocessed=Data_Preprocessing(
         data_path=data_path,
         prep_batch_size=batch_size)
     base_dataset = preprocessed.dataset  # HuggingFace Dataset
-
+    test_preprocessed = Data_Preprocessing(
+        data_path=data_path,
+        prep_batch_size=batch_size,
+        split_name='test')
     # ── 2. Dividir índices ──
     print("\n── Dividiendo en train / val / test ──")
     train_idx, val_idx, test_idx = split_dataset(base_dataset)
 
     train_split = base_dataset.select(train_idx)
     val_split   = base_dataset.select(val_idx)
-    test_split  = base_dataset.select(test_idx)
+    test_split  = test_preprocessed.dataset
 
     # ── 3. Asignar processor por split via set_transform ──
     train_split.set_transform(HFTransform(TrainProcessor()))

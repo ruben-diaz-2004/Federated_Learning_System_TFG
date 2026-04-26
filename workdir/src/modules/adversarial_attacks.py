@@ -32,9 +32,9 @@ import matplotlib.pyplot as plt
 from art.estimators.classification import PyTorchClassifier
 from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent, BasicIterativeMethod
 
-from workdir.src.modules.data_preprocessing import Data_Preprocessing
+from data_preprocessing import Data_Preprocessing
 # Reutilizamos las funciones del script de entrenamiento
-from workdir.src.modules.train_resnet import (
+from train_resnet import (
     build_resnet50, split_dataset, make_balanced_sampler, collate_fn,
     TrainProcessor, ValProcessor, HFTransform, SEED, set_seed,
     IMAGENET_MEAN, IMAGENET_STD
