@@ -228,20 +228,13 @@ def run_attack(data_dir, model_path, attack_type,
 
     # ── 1. Cargar y dividir dataset ──
     print("\n── Cargando dataset ──")
-    data_prep = Data_Preprocessing(
-        data_path=Path(data_dir),
-        split_name='test',
-        image_size=[256, 256],
-        image_processor=None,
-        num_proc=1,
-        prep_batch_size=batch_size,
-    )
-    # base_dataset = data_prep.dataset
-    # train_idx, val_idx, test_idx = split_dataset(base_dataset)
+    data_prep = Data_Preprocessing(data_path=Path(data_dir), prep_batch_size=batch_size,)
+    base_dataset = data_prep.dataset
+    train_idx, val_idx, test_idx = split_dataset(base_dataset)
 
     # Usamos el split de test con ValProcessor (sin augmentación)
-    # test_split = base_dataset.select(test_idx)
-    test_split = data_prep.dataset
+    test_split = base_dataset.select(test_idx)
+    # test_split = data_prep.dataset
     test_split.set_transform(HFTransform(ValProcessor()))
 
     # Opcionalmente limitamos el número de muestras para no quedarnos sin memoria
@@ -264,7 +257,7 @@ def run_attack(data_dir, model_path, attack_type,
 
     # ── 4. Evaluar sobre ejemplos limpios ──
     print("\n── Evaluación sobre ejemplos limpios ──")
-    evaluate_numpy(classifier, x_test, y_test, label="limpio")
+    clean_bal, clean_prec, clean_rec = evaluate_numpy(classifier, x_test, y_test, label="limpio")
 
     # ── 5. Generar ejemplos adversarios ──
     print(f"\n── Generando ejemplos adversarios ({attack_type.upper()}) ──")
@@ -282,7 +275,7 @@ def run_attack(data_dir, model_path, attack_type,
 
     # ── 6. Evaluar sobre ejemplos adversarios ──
     print("\n── Evaluación sobre ejemplos adversarios ──")
-    evaluate_numpy(classifier, x_test_adv, y_test, label="adversario")
+    adv_bal, adv_prec, adv_rec = evaluate_numpy(classifier, x_test_adv, y_test, label="adversario")
 
     # ── 7. Visualizar ejemplos ──
     print("\n── Visualizando ejemplos antes/después del ataque ──")
@@ -304,7 +297,15 @@ def run_attack(data_dir, model_path, attack_type,
         np.save(out_path / f"y_adv_{attack_type}.npy", y_test)
         print(f"\n  Ejemplos adversarios guardados en {save_adv}")
 
-    return x_test, x_test_adv, y_test
+
+    return {
+    "clean_bal_acc":   clean_bal,
+    "clean_precision": clean_prec,
+    "clean_recall":    clean_rec,
+    "adv_bal_acc":     adv_bal,
+    "adv_precision":   adv_prec,
+    "adv_recall":      adv_rec,
+    }
 
 
 # ──────────────────────────────────────────────

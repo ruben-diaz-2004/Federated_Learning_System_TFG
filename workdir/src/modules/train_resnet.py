@@ -130,7 +130,7 @@ class HFTransform:
 # ──────────────────────────────────────────────
 # División train / val / test sobre HF dataset
 # ──────────────────────────────────────────────
-def split_dataset(hf_dataset, train_ratio=1.0, val_ratio=0.10, seed=SEED):
+def split_dataset(hf_dataset, train_ratio=0.70, val_ratio=0.10, seed=SEED):
     """
     Divide un HuggingFace dataset en train, val, test de forma reproducible.
     train_ratio : fracción total para train+val  (0.70)
@@ -257,6 +257,7 @@ def train(model, train_loader, val_loader, device,
         if val_bal_acc > best_val_acc:
             best_val_acc = val_bal_acc
             epochs_no_improve = 0
+            best_epoch = epoch
             torch.save(model.state_dict(), save_path)
             print(f"  ✓ Mejor modelo guardado ({save_path})")
         else:
@@ -266,7 +267,7 @@ def train(model, train_loader, val_loader, device,
                 break
 
     print(f"\nMejor Val Balanced Accuracy: {best_val_acc:.4f}")
-    return best_val_acc
+    return best_val_acc, best_epoch
 
 
 def main():
