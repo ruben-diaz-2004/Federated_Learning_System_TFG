@@ -194,37 +194,32 @@ def make_gaussian_trigger(size: int = 8, position: str = "top_left",
     return trigger
 
 
-def make_sinusoidal_trigger(delta: float = 0.1, frequency: int = 6, **kwargs):
+def make_sinusoidal_trigger(delta: float = 0.08, frequency: int = 6, **kwargs):
     """
     Trigger SIG (Barni et al. 2019): bandas horizontales sinusoidales
-    superpuestas en TODA la imagen. Único trigger global, no localizado.
+    superpuestas en TODA la imagen.
 
     pixel(i, j) += delta * sin(2π * frequency * j / W)
-
-    `delta` controla la amplitud (más alto = más visible, más fácil de aprender).
-    Acepta **kwargs para compartir firma con los demás (size/position se ignoran).
     """
     def trigger(x: np.ndarray) -> np.ndarray:
         x = x.copy()
         fmt, H, W = _detect_format(x)
-        # Patrón sinusoidal a lo ancho de la imagen
         cols = np.arange(W, dtype=np.float32)
-        wave = delta * np.sin(2 * np.pi * frequency * cols / W)  # (W,)
-        wave_2d = np.broadcast_to(wave, (H, W))                  # (H, W)
+        wave = delta * np.sin(2 * np.pi * frequency * cols / W)
+        wave_2d = np.broadcast_to(wave, (H, W))
 
         if x.ndim == 3:
             if fmt == "chw":
                 x = x + wave_2d[None, :, :]
             else:
                 x = x + wave_2d[:, :, None]
-        else:  # ndim == 4
+        else:
             if fmt == "chw":
                 x = x + wave_2d[None, None, :, :]
             else:
                 x = x + wave_2d[None, :, :, None]
 
-        return np.clip(x, 0.0, 1.0)
-
+        return x  # ← sin clip
     return trigger
 
 
@@ -607,6 +602,7 @@ def save_poisoned_as_png(
     chosen_idx: np.ndarray,
     out_dir: str,
     target_class: int,
+    trigger_type: str,
 ) -> None:
     """
     Guarda únicamente las imágenes que recibieron el trigger como PNG.
@@ -623,7 +619,7 @@ def save_poisoned_as_png(
     mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(3, 1, 1)
     std  = np.array(IMAGENET_STD,  dtype=np.float32).reshape(3, 1, 1)
 
-    out_path = Path(out_dir) / f"class_{target_class}"
+    out_path = Path(out_dir) / f"{trigger_type}"
     out_path.mkdir(parents=True, exist_ok=True)
 
     for i, idx in enumerate(chosen_idx):
@@ -699,10 +695,10 @@ def run_backdoor(
         # Si el usuario no especifica ruta exacta, anexamos el tipo de trigger
         # para no pisar resultados de comparativas previas
         out_dir = save_poisoned
-        if Path(out_dir).name == "poisoned_images":
-            out_dir = f"{out_dir}_{trigger_type}"
+        # if Path(out_dir).name == "poisoned_images":
+        #     out_dir = f"{out_dir}_{trigger_type}"
         print(f"\n── Guardando imágenes envenenadas en {out_dir} ──")
-        save_poisoned_as_png(x_train_p, y_train_p, chosen_idx, out_dir, target_class)
+        save_poisoned_as_png(x_train_p, y_train_p, chosen_idx, out_dir, target_class, trigger_type)
 
     # ── 4. DataLoaders desde numpy ──
     train_loader = make_numpy_loader(x_train_p, y_train_p, batch_size, balanced=True)
