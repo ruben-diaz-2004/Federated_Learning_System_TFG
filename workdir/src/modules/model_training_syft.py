@@ -64,6 +64,9 @@ def run_syft_pipeline(
         "lr":          0.001,
         "patience":    50,
         "num_classes": 2,
+        "seed":        42,
+        "train_ratio": 0.70,
+        "val_ratio":   0.10,
     }
     if cfg:
         _cfg.update(cfg)
@@ -97,7 +100,7 @@ def run_syft_pipeline(
 
     # Datos mock — lo que verá el científico
     mock_data = {
-        "path":    "/mock/data/path",
+        #"path":    "/mock/data/path",
         "images":  np.zeros((5, 256, 256, 3), dtype=np.uint8),
         "labels":  [0, 1, 0, 1, 0],
         "train_config": _cfg,
@@ -157,7 +160,7 @@ def run_syft_pipeline(
                 set_seed, build_resnet50, split_dataset,
                 make_balanced_sampler, collate_fn,
                 HFTransform, TrainProcessor, ValProcessor,
-                train, evaluate, SEED,
+                train, evaluate,
             )
 
             data_path   = Path(raw_data_dict["path"])
@@ -168,8 +171,11 @@ def run_syft_pipeline(
             lr          = cfg.get("lr",           0.001)
             patience    = cfg.get("patience",     50)
             num_classes = cfg.get("num_classes",  2)
+            seed        = cfg.get("seed",         42)
+            train_ratio = cfg.get("train_ratio",  0.70)
+            val_ratio   = cfg.get("val_ratio",    0.10)
 
-            set_seed(SEED)
+            set_seed(seed)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
             # 1. Preprocesado
@@ -178,7 +184,7 @@ def run_syft_pipeline(
             ).dataset
 
             # 2. Split
-            train_idx, val_idx, test_idx = split_dataset(base_dataset)
+            train_idx, val_idx, test_idx = split_dataset(base_dataset, train_ratio, val_ratio)
             train_split = base_dataset.select(train_idx)
             val_split   = base_dataset.select(val_idx)
             test_split  = base_dataset.select(test_idx)

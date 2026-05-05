@@ -12,7 +12,7 @@ Orquestador del pipeline completo de investigación de glaucoma.
 Uso:
     python run_pipeline.py \
         --data_dir     /ruta/al/dataset \
-        --dataset_name RIMONE-A \
+        --dataset_name RIMONE \
         --model_out    best_rimone_syft.pth
 
 Requisitos previos:
@@ -77,6 +77,9 @@ def main():
     parser.add_argument("--epochs",       type=int,   default=500)
     parser.add_argument("--patience",     type=int,   default=50)
     parser.add_argument("--num_classes",  type=int,   default=2)
+    parser.add_argument("--seed",         type=int,   default=42)
+    parser.add_argument("--train_ratio",  type=float, default=0.70)
+    parser.add_argument("--val_ratio",    type=float, default=0.10)
     # Ataques adversarios
     parser.add_argument("--epsilon",      type=float, default=0.1)
     parser.add_argument("--max_iter",     type=int,   default=10)
@@ -107,6 +110,9 @@ def main():
             "lr":          args.lr,
             "patience":    args.patience,
             "num_classes": args.num_classes,
+            "seed":        args.seed,
+            "train_ratio": args.train_ratio,
+            "val_ratio":   args.val_ratio,
         },
     )
 
@@ -123,9 +129,9 @@ def main():
         n_train     = training_result["train_samples"],
         n_val       = training_result["val_samples"],
         n_test      = training_result["test_samples"],
-        seed        = 42,
-        train_ratio = 0.70,
-        val_ratio   = 0.10,
+        seed        = args.seed,
+        train_ratio = args.train_ratio,
+        val_ratio   = args.val_ratio,
     )
 
     experiment_id = register_experiment(
