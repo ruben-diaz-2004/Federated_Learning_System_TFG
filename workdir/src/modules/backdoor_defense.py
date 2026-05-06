@@ -1,4 +1,8 @@
 """
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
 backdoor_defense.py
 ===================
 Defensa contra backdoors mediante Activation Clustering (Chen et al. 2018).
@@ -32,23 +36,13 @@ import numpy as np
 import torch
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.metrics import (
-    precision_score, recall_score, f1_score, confusion_matrix
-)
+from sklearn.metrics import (precision_score, recall_score, f1_score, confusion_matrix)
 
 from data_preprocessing import Data_Preprocessing
-from train_resnet import (
-    set_seed, build_resnet50, split_dataset,
-    HFTransform, TrainProcessor, SEED,
-)
-from backdoor_attack import (
-    get_trigger, dataset_to_numpy, poison_dataset, make_numpy_loader,
-)
+from train_resnet import (set_seed, build_resnet50, split_dataset, HFTransform, TrainProcessor, SEED)
+from backdoor_attack import (get_trigger, dataset_to_numpy, poison_dataset, make_numpy_loader)
 
 
-# ──────────────────────────────────────────────
-# Extracción de activaciones con forward hook
-# ──────────────────────────────────────────────
 def extract_activations(model, x, batch_size, device, layer_idx=4):
     """
     Pasa todas las muestras x por el modelo y devuelve las activaciones
@@ -75,9 +69,7 @@ def extract_activations(model, x, batch_size, device, layer_idx=4):
     return np.concatenate(activations, axis=0)
 
 
-# ──────────────────────────────────────────────
-# Clustering por clase (núcleo de la defensa)
-# ──────────────────────────────────────────────
+
 def cluster_class_activations(activations, n_components=10, random_state=SEED):
     """
     Aplica PCA(n_components) + KMeans(k=2) sobre las activaciones de UNA clase.
@@ -122,7 +114,7 @@ def detect_poisoned_samples(activations, y, classes_to_check=None):
         mask = (y == cls)
         idx_cls = np.where(mask)[0]
         if len(idx_cls) < 4:
-            # Demasiado pocas muestras para clusterizar de forma estable
+            # pocas muestras para clusterizar de forma estable
             cluster_info[int(cls)] = {"skipped": True, "n": int(len(idx_cls))}
             continue
 

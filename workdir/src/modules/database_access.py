@@ -1,26 +1,27 @@
-# db.py  (v2)
-# Módulo de acceso a la base de datos glaucoma_ml.
-#
-# Cambio respecto a v1: Experiment ya no lleva split_id.
-# La relación experimento ↔ split se gestiona mediante
-# ExperimentSplit (tabla pivote), lo que permite evaluar
-# un mismo experimento sobre varios splits distintos.
-#
-# Flujo típico:
-#   1. register_dataset(...)         → dataset_id
-#   2. register_split(...)           → split_id   (una o varias veces)
-#   3. register_experiment(...)      → experiment_id
-#   4. register_experiment_split(experiment_id, split_id)  → es_id
-#   5. register_training_result(...) → result_id
-#   6. link_result_to_es(es_id, result_id)
-#   7. register_adversarial_run(...) → adv_id
+"""
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
+Módulo de acceso a la base de datos glaucoma_ml.
+
+La relación experimento ↔ split se gestiona mediante
+ExperimentSplit (tabla pivote), lo que permite evaluar
+un mismo experimento sobre varios splits distintos.
+
+Flujo típico:
+  1. register_dataset(...)         → dataset_id
+  2. register_split(...)           → split_id   (una o varias veces)
+  3. register_experiment(...)      → experiment_id
+  4. register_experiment_split(experiment_id, split_id)  → es_id
+  5. register_training_result(...) → result_id
+  6. link_result_to_es(es_id, result_id)
+  7. register_adversarial_run(...) → adv_id
+"""
 
 import mysql.connector
 from contextlib import contextmanager
 
-# ─────────────────────────────────────────────────────────────
-# Configuración de conexión — edita estos valores
-# ─────────────────────────────────────────────────────────────
 DB_CONFIG = {
     "host":     "localhost",
     "user":     "tfg0",
@@ -29,10 +30,6 @@ DB_CONFIG = {
     "port":     2200,
 }
 
-
-# ─────────────────────────────────────────────────────────────
-# Context manager
-# ─────────────────────────────────────────────────────────────
 @contextmanager
 def get_db():
     conn = mysql.connector.connect(**DB_CONFIG)
@@ -109,9 +106,6 @@ def register_split(dataset_id: int,
 
 # ─────────────────────────────────────────────────────────────
 # 3. Experiment
-#    Ya no recibe split_id. Los hiperparámetros se definen
-#    una vez y se pueden cruzar con varios splits.
-#    Solo se insertan las columnas que existen en el schema.
 # ─────────────────────────────────────────────────────────────
 def register_experiment(lr: float,
                         batch_size: int,

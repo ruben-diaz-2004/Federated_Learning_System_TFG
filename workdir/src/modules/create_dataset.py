@@ -1,38 +1,28 @@
-# create_dataset.py
-# ─────────────────────────────────────────────────────────────
-# Extrae imágenes de archivos .zip a un único directorio con
-# subdirectorios por clase, y registra el dataset en la BD.
-#
-# Estructura resultante:
-#   <dataset_dir>/
-#       normal/
-#           img001.jpg
-#           img002.jpg
-#           ...
-#       glaucoma/
-#           img101.jpg
-#           ...
-#
-# Uso:
-#   python create_dataset.py \
-#       --dataset_dir  ../../refuge_x            \
-#       --dataset_name REFUGE                    \
-#       --zips         normal.zip glaucoma.zip   \
-#       --classes      normal     glaucoma
-# ─────────────────────────────────────────────────────────────
+"""
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
+
+create_dataset.py
+─────────────────────────────────────────────────────────────
+Extrae imágenes de archivos .zip a un único directorio con
+subdirectorios por clase, y registra el dataset en la BD.
+
+Uso:
+  python create_dataset.py \
+      --dataset_dir  ../../refuge_x            \
+      --dataset_name REFUGE                    \
+      --zips         normal.zip glaucoma.zip   \
+      --classes      normal     glaucoma
+─────────────────────────────────────────────────────────────
+"""
 
 import argparse
 import zipfile as zf
 from pathlib import Path
-
 import numpy as np
-
-from db_1_1 import register_dataset
-
-
-# ─────────────────────────────────────────────────────────────
-# Extracción
-# ─────────────────────────────────────────────────────────────
+from database_access import register_dataset
 
 def extract_zips_to_dataset(
     dataset_dir: Path,
@@ -80,9 +70,6 @@ def extract_zips_to_dataset(
     return counts
 
 
-# ─────────────────────────────────────────────────────────────
-# Función principal
-# ─────────────────────────────────────────────────────────────
 
 def create_dataset(
     dataset_dir: Path,
@@ -128,14 +115,9 @@ def create_dataset(
     }
 
 
-# ─────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Crea el directorio del dataset desde zips y lo registra en la BD."
-    )
+    parser = argparse.ArgumentParser(description="Crea el directorio del dataset desde zips y lo registra en la BD.")
     parser.add_argument(
         "--dataset_dir", required=True,
         help="Directorio de destino donde se crearán los subdirectorios por clase."

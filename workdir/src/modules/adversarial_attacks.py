@@ -1,6 +1,10 @@
 """
-Paso 3: Ataques de adversarios sobre ResNet50 con ART (Adversarial Robustness Toolbox)
-Adaptado del notebook de referencia (Keras/TF → PyTorch)
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
+
+Ataques de adversarios sobre ResNet50 con ART (Adversarial Robustness Toolbox)
 
 Ataques soportados:
   - FGSM  : Fast Gradient Sign Method
@@ -12,7 +16,6 @@ Uso:
         --model_path best_resnet50.pth \
         --data_dir /ruta/rimone \
         --attack fgsm
-        python .\adversarial_attacks.py --model_path .\best_resnet50.pth --data_dir ..\..\rimone_A\ --attack fgsm
 """
 
 import random
@@ -20,9 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision import transforms, models
-from torchvision.transforms.v2 import RandomCrop, RandomHorizontalFlip, RandomVerticalFlip, \
-    ColorJitter, Normalize, ToTensor, Compose
+
 from sklearn.metrics import balanced_accuracy_score, precision_score, recall_score, confusion_matrix
 from pathlib import Path
 import argparse
@@ -33,7 +34,6 @@ from art.estimators.classification import PyTorchClassifier
 from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent, BasicIterativeMethod
 
 from data_preprocessing import Data_Preprocessing
-# Reutilizamos las funciones del script de entrenamiento
 from train_resnet import (
     build_resnet50, split_dataset, make_balanced_sampler, collate_fn,
     TrainProcessor, ValProcessor, HFTransform, SEED, set_seed,
@@ -172,7 +172,6 @@ def visualize_adversarial(x_clean, x_adv, y_true, classifier,
 
     preds_clean = np.argmax(classifier.predict(x_clean[:n_samples]), axis=1)
     preds_adv   = np.argmax(classifier.predict(x_adv[:n_samples]),   axis=1)
-    perturbations = x_adv[:n_samples] - x_clean[:n_samples]
 
     fig, axes = plt.subplots(n_samples, 2, figsize=(12, 4 * n_samples))
     if n_samples == 1:
@@ -187,7 +186,6 @@ def visualize_adversarial(x_clean, x_adv, y_true, classifier,
     for i in range(n_samples):
         img_clean = denormalize(x_clean[i])
         img_adv   = denormalize(x_adv[i])
-        #img_pert  = np.clip(perturbations[i].transpose(1, 2, 0) * 10 + 0.5, 0, 1)
 
         true_label  = class_names[y_true[i]]
         pred_clean  = class_names[preds_clean[i]]
@@ -199,10 +197,6 @@ def visualize_adversarial(x_clean, x_adv, y_true, classifier,
         axes[i, 1].imshow(img_adv)
         color = "red" if preds_adv[i] != y_true[i] else "green"
         axes[i, 1].set_xlabel(f"Pred: {pred_adv}", fontsize=10, color=color)
-
-        #axes[i, 2].imshow(img_pert)
-        #linf = np.max(np.abs(perturbations[i]))
-        #axes[i, 2].set_xlabel(f"L∞ = {linf:.4f}", fontsize=10)
 
         for ax in axes[i]:
             ax.axis("off")
@@ -232,15 +226,8 @@ def run_attack(data_dir, model_path, attack_type,
     base_dataset = data_prep.dataset
     train_idx, val_idx, test_idx = split_dataset(base_dataset)
 
-    # Usamos el split de test con ValProcessor (sin augmentación)
     test_split = base_dataset.select(test_idx)
-    # test_split = data_prep.dataset
     test_split.set_transform(HFTransform(ValProcessor()))
-
-    # Opcionalmente limitamos el número de muestras para no quedarnos sin memoria
-    # if n_samples and n_samples < len(test_idx):
-        # test_split = test_split.select(range(n_samples))
-        # print(f"  Usando {n_samples} muestras del conjunto de test")
 
     # ── 2. Convertir a numpy ──
     print("\n── Extrayendo arrays numpy del dataset ──")
@@ -308,9 +295,6 @@ def run_attack(data_dir, model_path, attack_type,
     }
 
 
-# ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Ataques adversarios sobre ResNet50 - Glaucoma")
     parser.add_argument("--data_dir",        type=str, required=True)

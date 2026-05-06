@@ -1,4 +1,8 @@
 """
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
 run_pipeline.py
 ===============
 Orquestador del pipeline completo de investigación de glaucoma.
@@ -18,7 +22,7 @@ Uso:
 Requisitos previos:
     - La tabla Dataset ya tiene una fila con el nombre indicado
       en --dataset_name (se recupera su dataset_id automáticamente).
-    - MySQL corriendo con las credenciales de DB_CONFIG en db_1_1.py.
+    - MySQL corriendo con las credenciales de DB_CONFIG en database_access.py.
     - PySyft, ART y PyTorch instalados.
 """
 
@@ -27,7 +31,7 @@ import sys
 
 from model_training_syft import run_syft_pipeline
 from adversarial_attacks import run_attack
-from db_1_1 import (
+from database_access import (
     get_db,
     register_split,
     register_experiment,
@@ -37,10 +41,6 @@ from db_1_1 import (
     register_adversarial_run,
 )
 
-
-# ─────────────────────────────────────────────────────────────
-# Helper BD
-# ─────────────────────────────────────────────────────────────
 
 def get_dataset_id(dataset_name: str) -> int:
     """Recupera el dataset_id a partir del nombre. Lanza ValueError si no existe."""
@@ -56,10 +56,6 @@ def get_dataset_id(dataset_name: str) -> int:
         )
     return row[0]
 
-
-# ─────────────────────────────────────────────────────────────
-# Pipeline principal
-# ─────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -94,9 +90,6 @@ def main():
     dataset_id = get_dataset_id(args.dataset_name)
     print(f"     dataset_id = {dataset_id}")
 
-    # ────────────────────────────────────────────────────────
-    # FASE 1 — Entrenamiento federado (PySyft)
-    # ────────────────────────────────────────────────────────
     print("\n══════════════════════════════════════════")
     print(" FASE 1 — Entrenamiento federado (PySyft)")
     print("══════════════════════════════════════════")
@@ -158,16 +151,13 @@ def main():
     print(f"     split_id      = {split_id}")
     print(f"     experiment_id = {experiment_id}")
     print(f"     es_id         = {es_id}")
-    print(f"     result_id     = {result_id}  ✓")
+    print(f"     result_id     = {result_id}")
 
     if args.skip_attacks:
         print("\n[INFO] Fase de ataques omitida (--skip_attacks).")
         print("\nPipeline completado.")
         return
 
-    # ────────────────────────────────────────────────────────
-    # FASE 2 — Ataques adversarios (ART)
-    # ────────────────────────────────────────────────────────
     print("\n══════════════════════════════════════════")
     print(" FASE 2 — Ataques adversarios (ART)")
     print("══════════════════════════════════════════")
@@ -238,7 +228,7 @@ def main():
             print(f"  [WARN] Ataque {atype} falló y se omite: {exc}")
 
     print("\n══════════════════════════════════════════")
-    print(" Pipeline completado con éxito ✓")
+    print(" Pipeline completado con éxito")
     print("══════════════════════════════════════════")
 
 

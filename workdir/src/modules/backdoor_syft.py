@@ -1,15 +1,14 @@
-# -*- coding: utf-8 -*-
 """
 @author: Rubén Díaz Marrero
 Grado en ingeniería informática, Universidad de La Laguna
 Trabajo de Fin de Grado — Curso 2025/2026
 ======================
 
-model_training_syft.py
-Entrenamiento federado en PySyft para el proyecto de investigación de glaucoma.
+backdoor_syft.py
+Entrenamiento federado en PySyft con ataque de backdoor.
 
 Modo de uso:
-    python model_training_syft.py --data_dir /ruta/rimone_A --model_out best.pth
+    python backdoor_syft.py --data_dir /ruta/rimone_A --model_out best.pth
 """
 
 import argparse
@@ -122,112 +121,122 @@ def run_syft_pipeline(
     )
 
     @sy.syft_function(input_policy=sy.ExactMatch(raw_data_dict=asset))
-    def remote_preprocessing_and_training(raw_data_dict):
+    def remote_backdoor_training(raw_data_dict):
         """
-        Pipeline completo ejecutado en el servidor del owner:
-          1. Data_Preprocessing  → HuggingFace Dataset
-          2. split_dataset       → train / val / test
-          3. DataLoaders con WeightedRandomSampler
-          4. build_resnet50      → ResNet50 preentrenado en ImageNet
-          5. train()             → early stopping + ReduceLROnPlateau
-          6. evaluate()          → métricas en test
-
-        Solo se devuelven métricas; el modelo queda guardado en disco
-        en el servidor bajo la ruta model_out.
+        Pipeline de entrenamiento con backdoor inyectado por el data scientist.
+        El owner solo ve métricas; el modelo envenenado queda en su servidor.
         """
         import traceback
         try:
             import torch
+            import numpy as np
             from pathlib import Path
             from torch.utils.data import DataLoader
-            from sklearn.metrics import confusion_matrix
 
             from data_preprocessing import Data_Preprocessing
             from train_resnet import (
                 set_seed, build_resnet50, split_dataset,
-                make_balanced_sampler, collate_fn,
-                HFTransform, TrainProcessor, ValProcessor,
-                train, evaluate,
+                HFTransform, ValProcessor, TrainProcessor,
+                train, SEED,
+            )
+            from backdoor_attack import (
+                get_trigger, dataset_to_numpy,
+                poison_dataset, make_numpy_loader,
+                evaluate_loader, compute_attack_success_rate,
             )
 
-            data_path   = Path(raw_data_dict["path"])
-            model_out   = raw_data_dict.get("model_out", "best_rimone_syft.pth")
-            cfg         = raw_data_dict.get("train_config", {})
-            batch_size  = cfg.get("batch_size",  32)
-            epochs      = cfg.get("epochs",      500)
-            lr          = cfg.get("lr",           0.001)
-            patience    = cfg.get("patience",     50)
-            num_classes = cfg.get("num_classes",  2)
-            seed        = cfg.get("seed",         42)
-            train_ratio = cfg.get("train_ratio",  0.70)
-            val_ratio   = cfg.get("val_ratio",    0.10)
+            # ── Parámetros ──
+            data_path    = Path(raw_data_dict["path"])
+            cfg          = raw_data_dict.get("train_config", {})
+            batch_size   = cfg.get("batch_size",  32)
+            epochs       = cfg.get("epochs",      500)
+            lr           = cfg.get("lr",           0.001)
+            patience     = cfg.get("patience",     50)
+            num_classes  = cfg.get("num_classes",  2)
 
-            set_seed(seed)
+            # Parámetros del backdoor (hardcodeados por el atacante)
+            _poison_rate   = poison_rate    # capturado del closure
+            _trigger_size  = trigger_size
+            _trigger_type  = trigger_type
+            _source_class  = 0
+            _target_class  = target_class
+
+            set_seed(SEED)
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-            # 1. Preprocesado
+            # ── 1. Dataset y split ──
             base_dataset = Data_Preprocessing(
                 data_path=data_path, prep_batch_size=batch_size
             ).dataset
+            train_idx, val_idx, test_idx = split_dataset(base_dataset)
 
-            # 2. Split
-            train_idx, val_idx, test_idx = split_dataset(base_dataset, train_ratio, val_ratio)
             train_split = base_dataset.select(train_idx)
             val_split   = base_dataset.select(val_idx)
             test_split  = base_dataset.select(test_idx)
 
-            # 3. Transforms
             train_split.set_transform(HFTransform(TrainProcessor()))
             val_split.set_transform(HFTransform(ValProcessor()))
             test_split.set_transform(HFTransform(ValProcessor()))
 
-            # 4. DataLoaders
-            sampler = make_balanced_sampler(base_dataset, train_idx)
-            train_loader = DataLoader(train_split, batch_size=batch_size, sampler=sampler, collate_fn=collate_fn, num_workers=0, pin_memory=True)
-            val_loader = DataLoader(val_split, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0)
-            test_loader = DataLoader(test_split, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0)
+            # ── 2. Convertir a numpy para envenenar ──
+            from backdoor_attack import dataset_to_numpy, make_numpy_loader
+            x_train, y_train = dataset_to_numpy(train_split, batch_size)
+            x_val,   y_val   = dataset_to_numpy(val_split,   batch_size)
+            x_test,  y_test  = dataset_to_numpy(test_split,  batch_size)
 
-            # 5. Modelo
-            model = build_resnet50(num_classes=num_classes, pretrained=True).to(device)
-
-            # 6. Entrenamiento — train() devuelve (best_val_acc, best_epoch)
-            best_val_acc, best_epoch = train(
-                model, train_loader, val_loader, device,
-                epochs=epochs, lr=lr, patience=patience,
-                save_path=model_out,
+            # ── 3. Envenenamiento del training set ──
+            trigger_fn = get_trigger(_trigger_type, size=_trigger_size, position="top_left")
+            x_train_p, y_train_p, n_poisoned, _ = poison_dataset(
+                x_train, y_train,
+                trigger_fn=trigger_fn,
+                poison_rate=_poison_rate,
+                source_class=_source_class,
+                target_class=_target_class,
             )
 
-            # 7. Evaluación en test
-            bal_acc, precision, recall = evaluate(model, test_loader, device)
+            train_loader = make_numpy_loader(x_train_p, y_train_p, batch_size, balanced=True)
+            val_loader   = make_numpy_loader(x_val,     y_val,     batch_size)
+            test_loader  = make_numpy_loader(x_test,    y_test,    batch_size)
 
-            # 8. Confusion matrix serializable
-            model.eval()
-            all_preds, all_labels = [], []
-            with torch.no_grad():
-                for images, labels in test_loader:
-                    preds = model(images.to(device)).argmax(dim=1).cpu().numpy()
-                    all_preds.extend(preds)
-                    all_labels.extend(labels.numpy())
-            cm = confusion_matrix(all_labels, all_preds).tolist()
+            # ── 4. Entrenamiento ──
+            model = build_resnet50(num_classes=num_classes, pretrained=True).to(device)
+            best_val_acc = train(
+                model, train_loader, val_loader, device,
+                epochs=epochs, lr=lr, patience=patience,
+                save_path="backdoor_resnet50.pth",
+            )
+
+            # ── 5. Evaluación ──
+            clean_bal, clean_prec, clean_rec = evaluate_loader(
+                model, test_loader, device, label="limpio"
+            )
+            asr = compute_attack_success_rate(
+                model, x_test, y_test,
+                trigger_fn=trigger_fn,
+                source_class=_source_class,
+                target_class=_target_class,
+                batch_size=batch_size,
+                device=device,
+            )
 
             return {
-                "status":           "Exito",
-                "device":           str(device),
-                "total_imagenes":   len(base_dataset),
-                "train_samples":    len(train_idx),
-                "val_samples":      len(val_idx),
-                "test_samples":     len(test_idx),
-                "best_epoch":       int(best_epoch),
-                "best_val_bal_acc": round(float(best_val_acc), 4),
-                "test_bal_acc":     round(float(bal_acc),      4),
-                "test_precision":   round(float(precision),    4),
-                "test_recall":      round(float(recall),       4),
-                "confusion_matrix": cm,
-                "model_path":       model_out,
-                "error":            None,
+                "status":             "Exito",
+                "device":             str(device),
+                "n_poisoned":         n_poisoned,
+                "poison_rate":        _poison_rate,
+                "trigger_size":       _trigger_size,
+                "target_class":       _target_class,
+                "best_val_bal_acc":   round(float(best_val_acc[0]), 4),
+                "clean_bal_acc":      round(float(clean_bal),    4),
+                "clean_precision":    round(float(clean_prec),   4),
+                "clean_recall":       round(float(clean_rec),    4),
+                "attack_success_rate": round(float(asr),         4),
+                "model_weights":      {k: v.cpu() for k, v in model.state_dict().items()},
+                "error":              None,
             }
 
         except Exception:
+            import traceback
             return {"status": "CRASH INTERNO", "error": traceback.format_exc()}
 
     my_project.create_code_request(

@@ -1,3 +1,14 @@
+"""
+@author: José Ignacio Estévez Damas
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
+
+data_preprocessing.py
+
+Preprocesamiento de datos con Hugging Face Datasets y torchvision.transforms.
+"""
 import sys
 import os
 from pathlib import Path
@@ -13,15 +24,12 @@ class Data_Preprocessing:
             split_name='train',
             image_size=[256,256], # Tamaño de la imagen.
             image_processor=None, # Procesamiento de batches de imagenes justo antes de ser consumidas por el modelo
-            filter_names=[], #TODO
             num_proc=1, # workers
             prep_batch_size=32, # Tam. batches
             download_mode=DownloadMode.REUSE_DATASET_IF_EXISTS, # Dataset download mode
             keep_in_memory=True # Opcion para el Dataset
 
     ):
-        #TODO
-        # Check de data_path
         self.data_path=data_path
         self.split_name=split_name
         self.image_size=image_size

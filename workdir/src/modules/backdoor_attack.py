@@ -1,6 +1,10 @@
 """
+@author: Rubén Díaz Marrero
+Grado en ingeniería informática, Universidad de La Laguna
+Trabajo de Fin de Grado — Curso 2025/2026
+======================
 backdoor_attack.py
-==================
+
 Pipeline de ataque de puerta trasera (PoisoningAttackBackdoor) sobre ResNet50,
 con soporte para múltiples tipos de trigger para comparar su efectividad.
 
@@ -326,6 +330,7 @@ def poison_dataset(
     poison_rate: float = 0.2,
     source_class: int = 0,
     target_class: int = 1,
+    seed: int = SEED,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """
     Envenena una fracción `poison_rate` de las muestras de `source_class`.
@@ -341,7 +346,7 @@ def poison_dataset(
 
     source_idx = np.where(y_train == source_class)[0]
     n_poison   = max(1, int(len(source_idx) * poison_rate))
-    rng        = np.random.default_rng(SEED)
+    rng        = np.random.default_rng(seed)
     chosen_idx = rng.choice(source_idx, size=n_poison, replace=False)
 
     x_out = x_train.copy()
@@ -433,7 +438,7 @@ def compute_attack_success_rate(
     x_source    = x_test[source_mask]
 
     if len(x_source) == 0:
-        print("  ⚠ No hay muestras de source_class en el test set.")
+        print("No hay muestras de source_class en el test set.")
         return 0.0
 
     x_triggered = trigger_fn(x_source)
@@ -453,144 +458,6 @@ def compute_attack_success_rate(
     print(f"  Attack Success Rate: {asr:.4f}  "
           f"({int(asr * len(x_source))}/{len(x_source)} muestras → clase {target_class})")
     return float(asr)
-
-
-# ──────────────────────────────────────────────
-# Función remota de Syft (data scientist malicioso)
-# Se registra como syft_function y se ejecuta en el servidor del owner.
-# El envenenamiento ocurre dentro de esta función, invisible para el owner
-# hasta que inspecciona el código antes de aprobar la solicitud.
-# ──────────────────────────────────────────────
-def build_backdoor_syft_function(asset, scientist_client, poison_rate, trigger_size, target_class,
-                                  trigger_type="square"):
-    """
-    Construye y registra la syft_function maliciosa.
-    Llama a esta función desde la sección del data scientist.
-    """
-    import syft as sy
-
-    @sy.syft_function(input_policy=sy.ExactMatch(raw_data_dict=asset))
-    def remote_backdoor_training(raw_data_dict):
-        """
-        Pipeline de entrenamiento con backdoor inyectado por el data scientist.
-        El owner solo ve métricas; el modelo envenenado queda en su servidor.
-        """
-        import traceback
-        try:
-            import torch
-            import numpy as np
-            from pathlib import Path
-            from torch.utils.data import DataLoader
-
-            from data_preprocessing import Data_Preprocessing
-            from train_resnet import (
-                set_seed, build_resnet50, split_dataset,
-                HFTransform, ValProcessor, TrainProcessor,
-                train, SEED,
-            )
-            from backdoor_attack import (
-                get_trigger, dataset_to_numpy,
-                poison_dataset, make_numpy_loader,
-                evaluate_loader, compute_attack_success_rate,
-            )
-
-            # ── Parámetros ──
-            data_path    = Path(raw_data_dict["path"])
-            cfg          = raw_data_dict.get("train_config", {})
-            batch_size   = cfg.get("batch_size",  32)
-            epochs       = cfg.get("epochs",      500)
-            lr           = cfg.get("lr",           0.001)
-            patience     = cfg.get("patience",     50)
-            num_classes  = cfg.get("num_classes",  2)
-
-            # Parámetros del backdoor (hardcodeados por el atacante)
-            _poison_rate   = poison_rate    # capturado del closure
-            _trigger_size  = trigger_size
-            _trigger_type  = trigger_type
-            _source_class  = 0
-            _target_class  = target_class
-
-            set_seed(SEED)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            # ── 1. Dataset y split ──
-            base_dataset = Data_Preprocessing(
-                data_path=data_path, prep_batch_size=batch_size
-            ).dataset
-            train_idx, val_idx, test_idx = split_dataset(base_dataset)
-
-            train_split = base_dataset.select(train_idx)
-            val_split   = base_dataset.select(val_idx)
-            test_split  = base_dataset.select(test_idx)
-
-            train_split.set_transform(HFTransform(TrainProcessor()))
-            val_split.set_transform(HFTransform(ValProcessor()))
-            test_split.set_transform(HFTransform(ValProcessor()))
-
-            # ── 2. Convertir a numpy para envenenar ──
-            from backdoor_attack import dataset_to_numpy, make_numpy_loader
-            x_train, y_train = dataset_to_numpy(train_split, batch_size)
-            x_val,   y_val   = dataset_to_numpy(val_split,   batch_size)
-            x_test,  y_test  = dataset_to_numpy(test_split,  batch_size)
-
-            # ── 3. Envenenamiento del training set ──
-            trigger_fn = get_trigger(_trigger_type, size=_trigger_size, position="top_left")
-            x_train_p, y_train_p, n_poisoned, _ = poison_dataset(
-                x_train, y_train,
-                trigger_fn=trigger_fn,
-                poison_rate=_poison_rate,
-                source_class=_source_class,
-                target_class=_target_class,
-            )
-
-            train_loader = make_numpy_loader(x_train_p, y_train_p, batch_size, balanced=True)
-            val_loader   = make_numpy_loader(x_val,     y_val,     batch_size)
-            test_loader  = make_numpy_loader(x_test,    y_test,    batch_size)
-
-            # ── 4. Entrenamiento ──
-            model = build_resnet50(num_classes=num_classes, pretrained=True).to(device)
-            best_val_acc = train(
-                model, train_loader, val_loader, device,
-                epochs=epochs, lr=lr, patience=patience,
-                save_path="backdoor_resnet50.pth",
-            )
-
-            # ── 5. Evaluación ──
-            clean_bal, clean_prec, clean_rec = evaluate_loader(
-                model, test_loader, device, label="limpio"
-            )
-            asr = compute_attack_success_rate(
-                model, x_test, y_test,
-                trigger_fn=trigger_fn,
-                source_class=_source_class,
-                target_class=_target_class,
-                batch_size=batch_size,
-                device=device,
-            )
-
-            return {
-                "status":             "Exito",
-                "device":             str(device),
-                "n_poisoned":         n_poisoned,
-                "poison_rate":        _poison_rate,
-                "trigger_size":       _trigger_size,
-                "target_class":       _target_class,
-                "best_val_bal_acc":   round(float(best_val_acc[0]), 4),
-                "clean_bal_acc":      round(float(clean_bal),    4),
-                "clean_precision":    round(float(clean_prec),   4),
-                "clean_recall":       round(float(clean_rec),    4),
-                "attack_success_rate": round(float(asr),         4),
-                "model_weights":      {k: v.cpu() for k, v in model.state_dict().items()},
-                "error":              None,
-            }
-
-        except Exception:
-            import traceback
-            return {"status": "CRASH INTERNO", "error": traceback.format_exc()}
-
-    scientist_client.code.request_code_execution(remote_backdoor_training)
-    print("Solicitud de backdoor enviada. Esperando aprobación del owner...")
-    return remote_backdoor_training
 
 
 # ──────────────────────────────────────────────
@@ -632,8 +499,7 @@ def save_poisoned_as_png(
 
 
 # ──────────────────────────────────────────────
-# Pipeline principal (ejecución local, sin Syft)
-# Útil para experimentos rápidos y desarrollo
+# Pipeline principal
 # ──────────────────────────────────────────────
 def run_backdoor(
     data_dir:      str,
@@ -644,13 +510,14 @@ def run_backdoor(
     trigger_pos:   str   = "top_left",
     source_class:  int   = 0,
     target_class:  int   = 1,
+    seed:          int   = SEED,
     batch_size:    int   = 32,
     epochs:        int   = 500,
     lr:            float = 0.001,
     patience:      int   = 50,
     save_poisoned: str   = None,
 ):
-    set_seed(SEED)
+    set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Dispositivo: {device}")
 
@@ -782,6 +649,8 @@ def main():
                         help="Clase origen: la que recibe el trigger en inferencia")
     parser.add_argument("--target_class",  type=int,   default=0,
                         help="Clase objetivo: a la que redirige el trigger")
+    parser.add_argument("--seed",          type=int,   default=SEED,
+                        help="Seed para reproducibilidad del envenenamiento")
     parser.add_argument("--batch_size",    type=int,   default=32)
     parser.add_argument("--epochs",        type=int,   default=500)
     parser.add_argument("--lr",            type=float, default=0.001)
@@ -799,6 +668,7 @@ def main():
         trigger_pos   = args.trigger_pos,
         source_class  = args.source_class,
         target_class  = args.target_class,
+        seed          = args.seed,
         batch_size    = args.batch_size,
         epochs        = args.epochs,
         lr            = args.lr,
