@@ -255,7 +255,93 @@ def register_adversarial_run(result_id: int,
         ))
         return cur.lastrowid
 
+# ─────────────────────────────────────────────────────────────
+# 7. PoisoningRun
+# ─────────────────────────────────────────────────────────────
+def register_poisoning_run(result_id: int,
+                            trigger_type: str,
+                            percent_poison: float,
+                            n_poisoned: int,
+                            source_class: int,
+                            target_class: int,
+                            clean_bal_acc: float,
+                            clean_precision: float,
+                            clean_recall: float,
+                            attack_success_rate: float,
+                            ac_precision: float,
+                            ac_recall: float,
+                            ac_f1: float,
+                            trigger_size: int = None,
+                            trigger_position: str = None) -> int:
+    """
+    Registra un ataque de backdoor (entrenamiento envenenado) junto con su
+    detección por Activation Clustering, y devuelve poison_id.
 
+    trigger_size y trigger_position son opcionales: NULL en el trigger
+    'sinusoidal' (que es global y no tiene parche localizado).
+    """
+    sql = """
+        INSERT INTO PoisoningRun
+            (result_id, trigger_type, trigger_size, trigger_position,
+             percent_poison, n_poisoned, source_class, target_class,
+             clean_bal_acc, clean_precision, clean_recall,
+             attack_success_rate,
+             ac_precision, ac_recall, ac_f1)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (
+            result_id, trigger_type, trigger_size, trigger_position,
+            percent_poison, n_poisoned, source_class, target_class,
+            clean_bal_acc, clean_precision, clean_recall,
+            attack_success_rate,
+            ac_precision, ac_recall, ac_f1,
+        ))
+        return cur.lastrowid
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. MembershipInferenceRun
+# ─────────────────────────────────────────────────────────────
+def register_mia_run(result_id: int,
+                     attack_variant: str,
+                     n_train_samples: int,
+                     n_test_samples: int,
+                     mia_accuracy: float,
+                     mia_precision: float,
+                     mia_recall: float) -> int:
+    """
+    Registra los resultados de un Membership Inference Attack y devuelve mia_id.
+
+    Ejemplo — al final de run_mia() en membership_inference.py:
+        mia_id = register_mia_run(
+            result_id       = result_id,
+            attack_variant  = "rf",
+            n_train_samples = metrics["n_train_samples"],
+            n_test_samples  = metrics["n_test_samples"],
+            mia_accuracy    = metrics["mia_accuracy"],
+            mia_precision   = metrics["mia_precision"],
+            mia_recall      = metrics["mia_recall"],
+        )
+    """
+    sql = """
+        INSERT INTO MembershipInferenceRun
+            (result_id, attack_variant,
+             n_train_samples, n_test_samples,
+             mia_accuracy, mia_precision, mia_recall)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (
+            result_id, attack_variant,
+            n_train_samples, n_test_samples,
+            mia_accuracy, mia_precision, mia_recall,
+        ))
+        return cur.lastrowid
+    
+    
 # ─────────────────────────────────────────────────────────────
 # Utilidades de consulta
 # ─────────────────────────────────────────────────────────────
@@ -353,6 +439,79 @@ def get_adversarial_summary() -> list[dict]:
         JOIN Split           s  ON es.split_id      = s.split_id
         JOIN Dataset         d  ON s.dataset_id     = d.dataset_id
         ORDER BY a.adv_id DESC
+    """
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql)
+        return cur.fetchall()
+
+
+def get_poisoning_summary() -> list[dict]:
+    """
+    Devuelve todos los ataques de backdoor con su contexto, ordenados por
+    ASR descendente. Útil para identificar qué triggers funcionaron mejor
+    contra qué modelos y qué tan efectiva fue la defensa AC.
+    """
+    sql = """
+        SELECT
+            p.poison_id,
+            e.experiment_id,
+            e.description       AS experiment,
+            d.name              AS dataset,
+            s.seed              AS split_seed,
+            p.trigger_type,
+            p.trigger_size,
+            p.trigger_position,
+            p.percent_poison,
+            p.n_poisoned,
+            p.source_class,
+            p.target_class,
+            p.clean_bal_acc,
+            p.attack_success_rate,
+            p.ac_precision,
+            p.ac_recall,
+            p.ac_f1
+        FROM PoisoningRun    p
+        JOIN TrainingResult  r  ON p.result_id     = r.result_id
+        JOIN ExperimentSplit es ON es.result_id    = r.result_id
+        JOIN Experiment      e  ON es.experiment_id = e.experiment_id
+        JOIN Split           s  ON es.split_id      = s.split_id
+        JOIN Dataset         d  ON s.dataset_id     = d.dataset_id
+        ORDER BY p.attack_success_rate DESC
+    """
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql)
+        return cur.fetchall()
+
+
+def get_mia_summary() -> list[dict]:
+    """
+    Devuelve todos los ataques MIA con su contexto (experimento, dataset,
+    split), ordenados por mia_accuracy desc. Útil para identificar
+    rápidamente qué combinaciones presentan mayor fuga de privacidad.
+    """
+    sql = """
+        SELECT
+            m.mia_id,
+            e.experiment_id,
+            e.description       AS experiment,
+            d.name              AS dataset,
+            s.seed              AS split_seed,
+            m.attack_variant,
+            m.n_train_samples,
+            m.n_test_samples,
+            m.mia_accuracy,
+            m.mia_precision,
+            m.mia_recall,
+            r.test_bal_acc
+        FROM MembershipInferenceRun m
+        JOIN TrainingResult  r  ON m.result_id      = r.result_id
+        JOIN ExperimentSplit es ON es.result_id     = r.result_id
+        JOIN Experiment      e  ON es.experiment_id = e.experiment_id
+        JOIN Split           s  ON es.split_id      = s.split_id
+        JOIN Dataset         d  ON s.dataset_id     = d.dataset_id
+        ORDER BY m.mia_accuracy DESC
     """
     with get_db() as conn:
         cur = conn.cursor(dictionary=True)
