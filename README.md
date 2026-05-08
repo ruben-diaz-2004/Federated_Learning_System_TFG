@@ -15,8 +15,8 @@ This repository is the experimental framework of a Bachelor's Thesis (*Trabajo d
 Python ≥ 3.10 and a CUDA-capable GPU recommended. The project is installable via `pyproject.toml`:
 
 ```bash
-git clone <repository-url>
-cd <repository-directory>
+git clone https://github.com/ruben-diaz-2004/Federated_Learning_System_TFG.git
+cd Federated_Learning_System_TFG
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
