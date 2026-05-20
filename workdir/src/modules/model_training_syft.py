@@ -18,6 +18,14 @@ import numpy as np
 import syft as sy
 import torch
 
+from database_access import get_experiment
+
+def run_syft_pipeline_db(experiment_id : int) -> dict:
+    # Get main experiment parameters
+    cfg=get_experiment(experiment_id)
+
+
+
 def run_syft_pipeline(
     data_dir:   str,
     model_out:  str  = "best_rimone_syft.pth",

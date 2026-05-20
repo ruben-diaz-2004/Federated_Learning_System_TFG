@@ -2,21 +2,21 @@
 @author: Rubén Díaz Marrero
 Grado en ingeniería informática, Universidad de La Laguna
 Trabajo de Fin de Grado — Curso 2025/2026
-======================
-Módulo de acceso a la base de datos glaucoma_ml.
+    ======================
+    Módulo de acceso a la base de datos glaucoma_ml.
 
-La relación experimento ↔ split se gestiona mediante
-ExperimentSplit (tabla pivote), lo que permite evaluar
-un mismo experimento sobre varios splits distintos.
+    La relación experimento ↔ split se gestiona mediante
+    ExperimentSplit (tabla pivote), lo que permite evaluar
+    un mismo experimento sobre varios splits distintos.
 
-Flujo típico:
-  1. register_dataset(...)         → dataset_id
-  2. register_split(...)           → split_id   (una o varias veces)
-  3. register_experiment(...)      → experiment_id
-  4. register_experiment_split(experiment_id, split_id)  → es_id
-  5. register_training_result(...) → result_id
-  6. link_result_to_es(es_id, result_id)
-  7. register_adversarial_run(...) → adv_id
+    Flujo típico:
+      1. register_dataset(...)         → dataset_id
+      2. register_split(...)           → split_id   (una o varias veces)
+      3. register_experiment(...)      → experiment_id
+      4. register_experiment_split(experiment_id, split_id)  → es_id
+      5. register_training_result(...) → result_id
+      6. link_result_to_es(es_id, result_id)
+      7. register_adversarial_run(...) → adv_id
 """
 
 import mysql.connector
@@ -75,7 +75,7 @@ def register_dataset(name: str, path: str,
 
 
 # ─────────────────────────────────────────────────────────────
-# 2. Split
+# 2. Split 
 # ─────────────────────────────────────────────────────────────
 def register_split(dataset_id: int,
                    n_train: int, n_val: int, n_test: int,
@@ -103,11 +103,42 @@ def register_split(dataset_id: int,
                           n_train, n_val, n_test))
         return cur.lastrowid
 
+def register_split_server(dataset_name: str,
+                   server_name: int,
+                   model_path : str,
+                   n_train: int, n_val: int, n_test: int,
+                   seed: int = 42,
+                   train_ratio: float = 0.70,
+                   val_ratio: float = 0.10) -> int:
+    """
+    Registra los parámetros de un split y devuelve split_id.
+    Puedes llamar a esta función varias veces con distintos seeds
+    para generar múltiples splits del mismo dataset.
+
+    Ejemplo:
+        split_a = register_split_server("rimone","server_rimone", "./rimone/model1/",756, 84, 360, seed=42_)
+
+        split_b = register_split_server("rimone","server_rimone", "./rimone/model2/",756, 84, 360, seed=123)
+    """
+    sql = """
+        INSERT INTO Split (dataset_id,server_id,model_path,seed,train_ratio,val_ratio,n_train,n_val,n_test) 
+        SELECT Dataset.dataset_id, Server.server_id, %s, %s, %s, %s, %s, %s, %s 
+        FROM Dataset,Server WHERE Dataset.name=%s and Server.name=%s ;
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (model_path, seed, train_ratio, val_ratio,
+                          n_train, n_val, n_test,dataset_name,server_name))
+        return cur.lastrowid
+
+
+
 
 # ─────────────────────────────────────────────────────────────
 # 3. Experiment
 # ─────────────────────────────────────────────────────────────
-def register_experiment(lr: float,
+def register_experiment(eve_model_path : str,
+                        lr: float,
                         batch_size: int,
                         epochs_max: int,
                         patience: int,
@@ -124,12 +155,12 @@ def register_experiment(lr: float,
     """
     sql = """
         INSERT INTO Experiment
-            (description, lr, batch_size, epochs_max, patience)
-        VALUES (%s, %s, %s, %s, %s)
+            (description, lr, batch_size, epochs_max, patience, eve_model_path)
+        VALUES (%s, %s, %s, %s, %s, %s)
     """
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute(sql, (description, lr, batch_size, epochs_max, patience))
+        cur.execute(sql, (description, lr, batch_size, epochs_max, patience, eve_model_path))
         return cur.lastrowid
 
 
@@ -517,3 +548,179 @@ def get_mia_summary() -> list[dict]:
         cur = conn.cursor(dictionary=True)
         cur.execute(sql)
         return cur.fetchall()
+
+# ─────────────────────────────────────────────────────────────
+# A1. Server
+# ─────────────────────────────────────────────────────────────
+def register_server(name: str, owner_email: str, owner_password: str) -> int:
+    """
+    Inserta un servidor y devuelve su server_id.
+    Si el nombre ya existe devuelve el id existente (idempotente).
+
+    Ejemplo:
+        server_id = register_server(
+            name="server_rimone",
+            owner_email="test1@codigla.org",
+            owner_password="changethis"
+        )
+    """
+    sql = """
+        INSERT INTO Server (name, owner_client_email, owner_client_password)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE server_id = LAST_INSERT_ID(server_id)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (name, owner_email, owner_password))
+        return cur.lastrowid
+
+# ------------------------------------------------------------------------
+# A2. Get dataset_path
+# --------------------------------------------------------------------
+def get_dataset_path_by_name(name: str) -> str:
+    """
+    Devuelve dataset_id de la tabla de datasets a partir del nombre
+    
+    Ejemplo:
+        dataset_id=get_dataset_by_name(name)
+
+    """
+
+    sql = """"
+        SELECT dataset_id FROM Dataset WHERE name=%s
+        """
+
+    with get_db() as conn:
+        cur=conn.cursor()
+        cur.execute(sql,(name,))
+        row = cur.fetchone()
+        if row is not None:
+            return row["path"]
+        else:
+            return ""
+
+# -----------------------------------------------
+# A3. Get experiment parameters
+# ------------------------------------------------
+
+
+def get_experiment(experiment_id : int) -> dict:
+    """
+
+    Deuelve la informaci'on del experimento a partir de su id
+
+    """
+
+    sql = """
+            SELECT * FROM Experiment WHERE experiment_id = %s
+
+          """
+
+    with get_db() as conn:
+        cur=conn.cursor()
+        cur.execute(sql,(experiment_id,))
+        row=cur.fetchone()
+        column_names=[f[0] for f in cur.description]
+        data=dict((field,row[n]) for (n,field) in enumerate(column_names))
+        return data
+
+# --------------------------------------------------
+# A4. Get splits of experiment
+# --------------------------------------------------
+ 
+def get_experiment_splits(experiment_id : int) -> dict:
+    """
+    Returns the list of splits for an experiment, grouped by server_id.
+ 
+    Each value in the returned dict is a list of split dicts ordered by
+    split_id. Each dict contains all Split columns plus es_id (from
+    ExperimentSplit), which is required to call link_result_to_es() after
+    a federated training round completes.
+ 
+    Return structure:
+        {
+            "3": [ {split_id, es_id, dataset_id, seed, ...}, ... ],
+            "7": [ {split_id, es_id, dataset_id, seed, ...}, ... ],
+        }
+    """
+    # Explicit column list avoids ambiguous split_id from the JOIN and
+    # guarantees es_id is always present in every row dict.
+    sql = """
+        SELECT
+            s.split_id,
+            s.dataset_id,
+            s.server_id,
+            s.seed,
+            s.train_ratio,
+            s.val_ratio,
+            s.n_train,
+            s.n_val,
+            s.n_test,
+            s.model_path,
+            s.epochs,
+            es.es_id,
+            es.result_id
+        FROM Split s
+        INNER JOIN ExperimentSplit es ON es.split_id = s.split_id
+        WHERE es.experiment_id = %s
+        ORDER BY s.split_id ASC
+    """
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (experiment_id,))
+        rows = cur.fetchall()
+ 
+    splits = {}
+    for row in rows:
+        server_id = str(row["server_id"])
+        if server_id not in splits:
+            splits[server_id] = []
+        splits[server_id].append(dict(row))
+    return splits
+
+# -----------------------------------
+# A5. Get server info using id
+
+def get_server(server_id : int) -> dict:
+    """
+
+    Deuelve la informaci'on del servidor a partir de su id
+
+    """
+
+    sql = """
+            SELECT * FROM Server WHERE server_id = %s
+
+          """
+
+    with get_db() as conn:
+        cur=conn.cursor()
+        cur.execute(sql,(server_id,))
+        row=cur.fetchone()
+        column_names=[f[0] for f in cur.description]
+        data=dict((field,row[n]) for (n,field) in enumerate(column_names))
+        return data
+
+# ---------------------------------------------
+# A6. Get dataset info using id
+
+def get_dataset(dataset_id : int) -> dict:
+    """
+
+    Deuelve la informaci'on del dataset a partir de su id
+
+    """
+
+    sql = """
+            SELECT * FROM Dataset WHERE dataset_id = %s
+
+          """
+
+    with get_db() as conn:
+        cur=conn.cursor()
+        cur.execute(sql,(dataset_id,))
+        row=cur.fetchone()
+        column_names=[f[0] for f in cur.description]
+        data=dict((field,row[n]) for (n,field) in enumerate(column_names))
+        return data
+

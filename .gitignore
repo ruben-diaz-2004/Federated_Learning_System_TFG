@@ -3,3 +3,5 @@
 datos_base/
 *.pyc
 *.pth
+*.swp
+*.sh

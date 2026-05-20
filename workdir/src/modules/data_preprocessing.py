@@ -63,7 +63,7 @@ class Data_Preprocessing:
                 data_dir=self.data_path,
                 split=self.split_name, 
                 download_mode=self.download_mode,
-                keep_in_memory=True)
+                keep_in_memory=False) # keep_in_memory False para reutilizar el dataset del cache
 
 
     def _prepare(self,examples):
