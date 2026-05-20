@@ -11,7 +11,7 @@ import torch
 from create_dataset import create_dataset
 from database_access import (
     register_server, register_experiment, register_experiment_split,
-    register_split_server, register_training_result, link_result_to_es,
+    register_split_server, save_federated_round_results,
 )
 from database_access import get_experiment, get_experiment_splits, get_server, get_dataset
 
@@ -637,47 +637,17 @@ def main():
                 fl_compute_model(in_models=model_list,out_model=cfg_experiment["eve_model_path"])
                 state=1 # Now we use the averaged eve_model in subsequent epochs
 
-            # ── Register federated round results in DB ─────────────────────
-            # All splits that participated in this round share one TrainingResult
-            # because they trained together and produced a single averaged model.
-            # We collect the last epoch results from each server and aggregate
-            # them (weighted by train_samples) to produce representative metrics.
-
-            # model_list: [(model_path, result_dict), ...]
-            # result_dict keys: train_samples, val_samples, test_samples,
-            #                   val_bal_acc, test_bal_acc, test_precision,
-            #                   test_recall, model_path
-            total_train = sum(
-                float(r.get("train_samples") or 0) for (_, r) in model_list
+            # -- Persist federated round results ----------------------------
+            # One TrainingResult row is shared by all splits in this round.
+            # Metrics are weighted averages across servers (by train_samples).
+            result_id = save_federated_round_results(
+                model_list            = model_list,
+                split_info_list       = split_info_list,
+                epochs_completed      = cfg_experiment["epochs_max"],
+                aggregated_model_path = cfg_experiment["eve_model_path"],
             )
-            if total_train > 0:
-                w = [float(r.get("train_samples") or 0) / total_train
-                     for (_, r) in model_list]
-            else:
-                w = [1.0 / len(model_list)] * len(model_list)
-
-            def _wavg(key):
-                return sum(
-                    wi * float(r.get(key) or 0.0)
-                    for wi, (_, r) in zip(w, model_list)
-                )
-
-            # The aggregated model saved by fl_compute_model is eve_model_path
-            result_id = register_training_result(
-                model_path       = cfg_experiment["eve_model_path"],
-                best_epoch       = cfg_experiment["epochs_max"],
-                best_val_bal_acc = _wavg("val_bal_acc"),
-                test_bal_acc     = _wavg("test_bal_acc"),
-                test_precision   = _wavg("test_precision"),
-                test_recall      = _wavg("test_recall"),
-            )
-            print(f"[DB] TrainingResult registered: result_id={result_id}")
-
-            # Link the shared result to every ExperimentSplit in this round
-            for split_info in split_info_list:
-                es_id = split_info["es_id"]
-                link_result_to_es(es_id, result_id)
-                print(f"[DB] Linked es_id={es_id} -> result_id={result_id}")
+            print(f"[DB] Round results saved: result_id={result_id} "
+                  f"linked to {len(split_info_list)} split(s)")
 
             # ── Shutdown servers ───────────────────────────────────────────
             print("Signaling servers to shut down...")
@@ -687,6 +657,11 @@ def main():
             # Wait for the background thread to cleanly exit
             t.join()
             print("All servers safely shut down. Exiting program.")
+
+
+
+
+
 
         else:
             splits_pending=False

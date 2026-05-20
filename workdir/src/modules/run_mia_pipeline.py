@@ -1,61 +1,63 @@
 """
-@author: Rubén Díaz Marrero
-Grado en ingeniería informática, Universidad de La Laguna
-Trabajo de Fin de Grado — Curso 2025/2026
+@author: Ruben Diaz Marrero
+Grado en ingenieria informatica, Universidad de La Laguna
+Trabajo de Fin de Grado -- Curso 2025/2026
 ======================
 run_mia_pipeline.py
 ===================
-Orquestador del Membership Inference Attack (MIA) sobre un modelo ya entrenado.
+Membership Inference Attack pipeline over an already-trained federated model.
 
-  1. Recupera el result_id del entrenamiento (debe existir en TrainingResult).
-  2. Ejecuta una o todas las variantes del ataque MIA.
-  3. Registra cada ejecución en MembershipInferenceRun.
+The script does NOT train a model. It expects a TrainingResult to already
+exist in the DB (produced by new_experiment.py) and runs one or all MIA
+variants over the model stored in that result.
 
-Uso típico — una sola variante:
-    python run_mia_pipeline.py \
-        --data_dir   /ruta/al/dataset \
-        --result_id  3 \
-        --variant    rf
+Flow:
+  1. Resolve result_id:
+       - If --result_id is given, use it directly.
+       - Otherwise fall back to the latest TrainingResult in the DB.
+  2. Retrieve model_path from TrainingResult (overridable with --model_path).
+  3. Run the requested MIA variant(s) via membership_inference.
+  4. Persist each MembershipInferenceRun in the DB linked to result_id.
 
-Uso típico — todas las variantes:
-    python run_mia_pipeline.py \
-        --data_dir   /ruta/al/dataset \
-        --result_id  3 \
-        --variant    all
+Usage -- single variant, latest model:
+    python run_mia_pipeline.py --data_dir /path/to/dataset --variant rf
 
-El model_path se recupera automáticamente del TrainingResult indicado;
-Se puede sobreescribir con --model_path si necesitas atacar un .pth distinto.
+Usage -- all variants, specific result:
+    python run_mia_pipeline.py --data_dir /path/to/dataset --result_id 7 --variant all
 """
 
 import argparse
 import sys
 
 from membership_inference import run_mia, run_all_variants, SUPPORTED_VARIANTS
-from database_access import get_db, register_mia_run
+from database_access import (
+    get_result_info,
+    get_latest_result_id,
+    register_mia_run,
+)
 
 
-def get_model_path_from_result(result_id: int) -> str:
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def resolve_result_id(requested_id: int | None) -> int:
     """
-    Recupera el model_path asociado a un TrainingResult.
-    Lanza ValueError si el result_id no existe.
+    Returns the result_id to attack.
+    Validates existence via get_result_info if explicitly provided.
+    Falls back to get_latest_result_id() when None.
     """
-    sql = "SELECT model_path FROM TrainingResult WHERE result_id = %s"
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(sql, (result_id,))
-        row = cur.fetchone()
-    if row is None:
-        raise ValueError(
-            f"No existe ningún TrainingResult con result_id={result_id}. "
-            "Ejecuta primero run_pipeline.py para entrenar el modelo."
-        )
-    return row[0]
+    if requested_id is not None:
+        get_result_info(requested_id)   # raises ValueError if not found
+        return requested_id
+    print("[BD] --result_id not provided, falling back to latest TrainingResult...")
+    return get_latest_result_id()
 
 
 def save_mia_to_db(result_id: int, metrics: dict) -> int:
     """
-    Persiste un dict de métricas (devuelto por run_mia) en la tabla
-    MembershipInferenceRun. Devuelve el mia_id generado.
+    Persists a metrics dict (returned by run_mia) into MembershipInferenceRun.
+    Returns the generated mia_id.
     """
     mia_id = register_mia_run(
         result_id       = result_id,
@@ -66,49 +68,85 @@ def save_mia_to_db(result_id: int, metrics: dict) -> int:
         mia_precision   = metrics["mia_precision"],
         mia_recall      = metrics["mia_recall"],
     )
-    print(f"  [BD] MembershipInferenceRun guardado → mia_id={mia_id} "
+    print(f"  [BD] MembershipInferenceRun saved -> mia_id={mia_id} "
           f"(variant={metrics['variant']}, accuracy={metrics['mia_accuracy']:.4f})")
     return mia_id
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Pipeline MIA: ejecución de Membership Inference Attack + persistencia en BD"
+        description=(
+            "MIA pipeline: Membership Inference Attack over a model "
+            "already registered in the DB via new_experiment.py."
+        )
     )
-    parser.add_argument("--data_dir",    required=True,
-                        help="Ruta al directorio del dataset")
-    parser.add_argument("--result_id",   type=int, required=True,
-                        help="result_id del TrainingResult sobre el que atacar")
-    parser.add_argument("--model_path",  default=None,
-                        help="Ruta al .pth del modelo (opcional; por defecto se "
-                             "recupera el almacenado en TrainingResult)")
-    parser.add_argument("--variant",     type=str, default="rf",
-                        choices=list(SUPPORTED_VARIANTS) + ["all"],
-                        help="Variante del ataque (default: rf). "
-                             "'all' ejecuta las cuatro variantes.")
+    parser.add_argument(
+        "--data_dir", required=True,
+        help="Path to the dataset directory.",
+    )
+    parser.add_argument(
+        "--result_id", type=int, default=None,
+        help=(
+            "result_id of the TrainingResult to attack. "
+            "If omitted, the latest result in the DB is used."
+        ),
+    )
+    parser.add_argument(
+        "--model_path", default=None,
+        help=(
+            "Path to the .pth model file. Optional -- by default the path "
+            "stored in TrainingResult is used. Provide this only if you need "
+            "to attack a different checkpoint than the one registered in the DB."
+        ),
+    )
+    parser.add_argument(
+        "--variant", type=str, default="all",
+        choices=list(SUPPORTED_VARIANTS) + ["all"],
+        help="MIA variant to run (default: all). 'all' runs every supported variant.",
+    )
     parser.add_argument("--batch_size",  type=int, default=32)
     parser.add_argument("--n_train_max", type=int, default=None,
-                        help="Limitar nº muestras de train usadas (None = todas)")
+                        help="Limit number of train samples used (None = all).")
     parser.add_argument("--n_test_max",  type=int, default=None,
-                        help="Limitar nº muestras de test  usadas (None = todas)")
+                        help="Limit number of test samples used (None = all).")
     args = parser.parse_args()
 
-    # ── 0. Resolver model_path desde la BD ───────────────────────────────────
-    print(f"\n[BD] Recuperando model_path para result_id={args.result_id}...")
-    db_model_path = get_model_path_from_result(args.result_id)
-    print(f"     model_path en BD : {db_model_path}")
+    # ── Step 1: resolve result_id ─────────────────────────────────────────
+    try:
+        result_id = resolve_result_id(args.result_id)
+    except ValueError as exc:
+        print(f"\n[ERROR] {exc}")
+        sys.exit(1)
+
+    # ── Step 2: retrieve model path ───────────────────────────────────────
+    try:
+        result_info = get_result_info(result_id)
+    except ValueError as exc:
+        print(f"\n[ERROR] {exc}")
+        sys.exit(1)
+
+    db_model_path = result_info["model_path"]
+    print(f"\n[BD] result_id={result_id} | model_path in DB: {db_model_path}")
 
     if args.model_path is None:
         model_path = db_model_path
     else:
         model_path = args.model_path
         if model_path != db_model_path:
-            print(f"  [WARN] --model_path ({model_path}) no coincide con el de BD. "
-                  f"Usando el indicado por argumento.")
+            print(f"  [WARN] --model_path ({model_path}) differs from DB path. "
+                  "Using the one provided via argument.")
 
+    print(f"     Using model: {model_path}")
+
+    # ── Step 3 & 4: run attack(s) and persist ────────────────────────────
+    print("\n======================================================")
     print(" Membership Inference Attack")
+    print("======================================================")
 
-    # ── 1. Ejecutar ataque(s) ────────────────────────────────────────────────
     if args.variant == "all":
         results = run_all_variants(
             data_dir    = args.data_dir,
@@ -118,19 +156,18 @@ def main():
             n_test_max  = args.n_test_max,
         )
 
-        # ── 2. Persistir cada variante en BD ─────────────────────────────────
         saved = 0
         for variant, metrics in results.items():
             if "error" in metrics:
-                print(f"  [SKIP] {variant}: ataque falló, no se registra en BD")
+                print(f"  [SKIP] {variant}: attack failed, not saved to DB.")
                 continue
             try:
-                save_mia_to_db(args.result_id, metrics)
+                save_mia_to_db(result_id, metrics)
                 saved += 1
             except Exception as exc:
-                print(f"  [WARN] No se pudo guardar la variante '{variant}' en BD: {exc}")
+                print(f"  [WARN] Could not save variant '{variant}' to DB: {exc}")
 
-        print(f"\n  Total variantes guardadas: {saved}/{len(SUPPORTED_VARIANTS)}")
+        print(f"\n  Variants saved: {saved}/{len(SUPPORTED_VARIANTS)}")
 
     else:
         metrics = run_mia(
@@ -143,12 +180,15 @@ def main():
         )
 
         try:
-            save_mia_to_db(args.result_id, metrics)
+            save_mia_to_db(result_id, metrics)
         except Exception as exc:
-            print(f"  [ERROR] No se pudo guardar en BD: {exc}")
+            print(f"  [ERROR] Could not save to DB: {exc}")
             sys.exit(1)
 
-    print(" Pipeline MIA completado con éxito")
+    print("\n======================================================")
+    print(" MIA pipeline completed successfully")
+    print("======================================================")
+
 
 if __name__ == "__main__":
     main()

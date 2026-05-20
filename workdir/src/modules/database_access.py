@@ -239,6 +239,108 @@ def register_training_result(model_path: str,
 
 
 # ─────────────────────────────────────────────────────────────
+# 5b. Federated round result persistence
+# ─────────────────────────────────────────────────────────────
+
+def save_federated_round_results(
+        model_list: list,
+        split_info_list: list,
+        epochs_completed: int,
+        aggregated_model_path: str,
+) -> int:
+    """
+    Persists the outcome of one federated training round and links it to
+    every ExperimentSplit that participated in the round.
+
+    One TrainingResult row is created for the round. All splits that trained
+    together share that single result because they produced one averaged model.
+    Metrics are the weighted average across servers, where the weight of each
+    server is proportional to its number of training samples.
+
+    Parameters
+    ----------
+    model_list : list of (model_path, result_dict)
+        Output collected from each server after the last epoch.
+        result_dict must contain at minimum:
+            train_samples   int
+            val_samples     int   (used for weighting val metrics)
+            val_bal_acc     float | None
+            test_bal_acc    float | None
+            test_precision  float | None
+            test_recall     float | None
+    split_info_list : list of dict
+        One entry per server, in the same order as model_list.
+        Each dict must contain 'es_id' (from get_experiment_splits).
+    epochs_completed : int
+        Total federated epochs run in this round (stored as best_epoch).
+    aggregated_model_path : str
+        Path to the averaged model produced by fl_compute_model().
+        Stored as model_path in TrainingResult.
+
+    Returns
+    -------
+    result_id : int
+        The id of the newly created TrainingResult row.
+
+    Example
+    -------
+        result_id = save_federated_round_results(
+            model_list           = model_list,
+            split_info_list      = split_info_list,
+            epochs_completed     = cfg_experiment["epochs_max"],
+            aggregated_model_path = cfg_experiment["eve_model_path"],
+        )
+    """
+    if not model_list:
+        raise ValueError("model_list is empty — nothing to save")
+    if len(model_list) != len(split_info_list):
+        raise ValueError(
+            f"model_list length ({len(model_list)}) does not match "
+            f"split_info_list length ({len(split_info_list)})"
+        )
+
+    # ── Weighted average of metrics ──────────────────────────────────────
+    # Weight each server by its number of training samples.
+    # If train_samples is missing or zero for all servers, fall back to
+    # a uniform average so the function never crashes on partial results.
+    raw_weights = [float((r.get("train_samples") or 0)) for (_, r) in model_list]
+    total = sum(raw_weights)
+    if total > 0:
+        weights = [w / total for w in raw_weights]
+    else:
+        weights = [1.0 / len(model_list)] * len(model_list)
+
+    def _wavg(key: str) -> float:
+        """Return the weighted average of a metric across all servers."""
+        return sum(
+            wi * float(r.get(key) or 0.0)
+            for wi, (_, r) in zip(weights, model_list)
+        )
+
+    avg_val_bal_acc    = _wavg("val_bal_acc")
+    avg_test_bal_acc   = _wavg("test_bal_acc")
+    avg_test_precision = _wavg("test_precision")
+    avg_test_recall    = _wavg("test_recall")
+
+    # ── Persist one shared TrainingResult ────────────────────────────────
+    result_id = register_training_result(
+        model_path       = aggregated_model_path,
+        best_epoch       = epochs_completed,
+        best_val_bal_acc = avg_val_bal_acc,
+        test_bal_acc     = avg_test_bal_acc,
+        test_precision   = avg_test_precision,
+        test_recall      = avg_test_recall,
+    )
+
+    # ── Link result to every ExperimentSplit in this round ───────────────
+    for split_info in split_info_list:
+        es_id = split_info["es_id"]
+        link_result_to_es(es_id, result_id)
+
+    return result_id
+
+
+# ─────────────────────────────────────────────────────────────
 # 6. AdversarialRun
 # ─────────────────────────────────────────────────────────────
 def register_adversarial_run(result_id: int,
@@ -375,6 +477,57 @@ def register_mia_run(result_id: int,
     
 # ─────────────────────────────────────────────────────────────
 # Utilidades de consulta
+# ─────────────────────────────────────────────────────────────
+# Result lookup helpers
+# ─────────────────────────────────────────────────────────────
+
+def get_result_info(result_id: int) -> dict:
+    """
+    Returns the TrainingResult row for a given result_id as a dict.
+    Keys: result_id, model_path, best_epoch, best_val_bal_acc,
+          test_bal_acc, test_precision, test_recall.
+    Raises ValueError if the result_id does not exist.
+
+    Example:
+        info = get_result_info(7)
+        model_path = info["model_path"]
+    """
+    sql = "SELECT * FROM TrainingResult WHERE result_id = %s"
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (result_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"No TrainingResult found with result_id={result_id}. "
+            "Run new_experiment.py first to generate a training result."
+        )
+    return dict(row)
+
+
+def get_latest_result_id() -> int:
+    """
+    Returns the result_id of the most recently inserted TrainingResult row.
+    Useful as a fallback when --result_id is not provided on the CLI.
+    Raises ValueError if the TrainingResult table is empty.
+
+    Example:
+        result_id = get_latest_result_id()
+        info      = get_result_info(result_id)
+    """
+    sql = "SELECT result_id FROM TrainingResult ORDER BY result_id DESC LIMIT 1"
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql)
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            "TrainingResult table is empty. "
+            "Run new_experiment.py first to generate a training result."
+        )
+    return row[0]
+
+
 # ─────────────────────────────────────────────────────────────
 def get_all_results() -> list[dict]:
     """
@@ -624,19 +777,20 @@ def get_experiment(experiment_id : int) -> dict:
         data=dict((field,row[n]) for (n,field) in enumerate(column_names))
         return data
 
+
 # --------------------------------------------------
 # A4. Get splits of experiment
 # --------------------------------------------------
- 
+
 def get_experiment_splits(experiment_id : int) -> dict:
     """
     Returns the list of splits for an experiment, grouped by server_id.
- 
+
     Each value in the returned dict is a list of split dicts ordered by
     split_id. Each dict contains all Split columns plus es_id (from
     ExperimentSplit), which is required to call link_result_to_es() after
     a federated training round completes.
- 
+
     Return structure:
         {
             "3": [ {split_id, es_id, dataset_id, seed, ...}, ... ],
@@ -669,7 +823,7 @@ def get_experiment_splits(experiment_id : int) -> dict:
         cur = conn.cursor(dictionary=True)
         cur.execute(sql, (experiment_id,))
         rows = cur.fetchall()
- 
+
     splits = {}
     for row in rows:
         server_id = str(row["server_id"])
@@ -723,4 +877,3 @@ def get_dataset(dataset_id : int) -> dict:
         column_names=[f[0] for f in cur.description]
         data=dict((field,row[n]) for (n,field) in enumerate(column_names))
         return data
-

@@ -1,198 +1,163 @@
 """
-@author: Rubén Díaz Marrero
-Grado en ingeniería informática, Universidad de La Laguna
-Trabajo de Fin de Grado — Curso 2025/2026
+@author: Ruben Diaz Marrero
+Grado en ingenieria informatica, Universidad de La Laguna
+Trabajo de Fin de Grado -- Curso 2025/2026
 ======================
 run_pipeline.py
 ===============
-Orquestador del pipeline completo de investigación de glaucoma.
+Adversarial attack pipeline over an already-trained federated model.
 
-  1. Recupera el dataset ya registrado en la BD (Dataset debe existir).
-  2. Ejecuta el entrenamiento federado vía PySyft → guarda Split,
-     Experiment, TrainingResult y ExperimentSplit en la BD.
-  3. Lanza los tres ataques adversarios (FGSM, PGD, BIM) sobre el
-     modelo entrenado → guarda AdversarialRun por cada ataque.
+The script does NOT train a model. It expects a TrainingResult to
+already exist in the DB (produced by new_experiment.py) and runs
+FGSM, PGD and BIM attacks over the model stored in that result.
 
-Uso:
-    python run_pipeline.py \
-        --data_dir     /ruta/al/dataset \
-        --dataset_name RIMONE \
-        --model_out    best_rimone_syft.pth
+Flow:
+  1. Resolve result_id:
+       - If --result_id is given, use it directly.
+       - Otherwise fall back to the latest TrainingResult in the DB.
+  2. Retrieve model_path and data context from TrainingResult.
+  3. Run FGSM, PGD and BIM attacks via adversarial_attacks.run_attack().
+  4. Persist each AdversarialRun in the DB linked to the result_id.
 
-Requisitos previos:
-    - La tabla Dataset ya tiene una fila con el nombre indicado
-      en --dataset_name (se recupera su dataset_id automáticamente).
-    - MySQL corriendo con las credenciales de DB_CONFIG en database_access.py.
-    - PySyft, ART y PyTorch instalados.
+Usage -- attack the latest trained model:
+    python run_pipeline.py --data_dir /path/to/dataset
+
+Usage -- attack a specific result:
+    python run_pipeline.py --data_dir /path/to/dataset --result_id 7
+
+Prerequisites:
+  - new_experiment.py has been run and at least one TrainingResult exists.
+  - MySQL running with the credentials in database_access.DB_CONFIG.
+  - ART and PyTorch installed.
 """
 
 import argparse
 import sys
 
-from model_training_syft import run_syft_pipeline
 from adversarial_attacks import run_attack
 from database_access import (
     get_db,
-    register_split,
-    register_experiment,
-    register_experiment_split,
-    register_training_result,
-    link_result_to_es,
+    get_result_info,
+    get_latest_result_id,
     register_adversarial_run,
 )
 
 
-def get_dataset_id(dataset_name: str) -> int:
-    """Recupera el dataset_id a partir del nombre. Lanza ValueError si no existe."""
-    sql = "SELECT dataset_id FROM Dataset WHERE name = %s"
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(sql, (dataset_name,))
-        row = cur.fetchone()
-    if row is None:
-        raise ValueError(
-            f"No existe ningún dataset con nombre '{dataset_name}' en la BD. "
-            "Regístralo primero con register_dataset()."
-        )
-    return row[0]
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
+def resolve_result_id(requested_id: int | None) -> int:
+    """
+    Returns the result_id to attack.
+
+    If requested_id is provided it is validated against the DB first.
+    If not provided the latest TrainingResult is used as fallback.
+    Raises ValueError (printed and sys.exit) on any DB miss.
+    """
+    if requested_id is not None:
+        # Validate that it actually exists -- get_result_info raises if not.
+        get_result_info(requested_id)
+        return requested_id
+    print("[BD] --result_id not provided, falling back to latest TrainingResult...")
+    return get_latest_result_id()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pipeline completo: entrenamiento federado + ataques adversarios + BD"
+        description=(
+            "Adversarial attack pipeline (FGSM + PGD + BIM) over a model "
+            "already registered in the DB via new_experiment.py."
+        )
     )
-    parser.add_argument("--data_dir",     required=True,
-                        help="Ruta al directorio del dataset")
-    parser.add_argument("--dataset_name", required=True,
-                        help="Nombre del dataset ya registrado en la tabla Dataset")
-    parser.add_argument("--model_out",    default="best_rimone_syft.pth",
-                        help="Fichero .pth donde se guardará el modelo")
-    # Hiperparámetros de entrenamiento
-    parser.add_argument("--lr",           type=float, default=0.001)
-    parser.add_argument("--batch_size",   type=int,   default=32)
-    parser.add_argument("--epochs",       type=int,   default=500)
-    parser.add_argument("--patience",     type=int,   default=50)
-    parser.add_argument("--num_classes",  type=int,   default=2)
-    parser.add_argument("--seed",         type=int,   default=42)
-    parser.add_argument("--train_ratio",  type=float, default=0.70)
-    parser.add_argument("--val_ratio",    type=float, default=0.10)
-    # Ataques adversarios
-    parser.add_argument("--epsilon",      type=float, default=0.1)
-    parser.add_argument("--max_iter",     type=int,   default=10)
-    parser.add_argument("--n_samples",    type=int,   default=None,
-                        help="Limitar muestras por ataque (None = todas)")
-    parser.add_argument("--skip_attacks", action="store_true",
-                        help="Omitir la fase de ataques adversarios")
+    # Required
+    parser.add_argument(
+        "--data_dir", required=True,
+        help="Path to the dataset directory used to generate adversarial examples.",
+    )
+    # Optional result selector
+    parser.add_argument(
+        "--result_id", type=int, default=None,
+        help=(
+            "result_id of the TrainingResult to attack. "
+            "If omitted, the latest result in the DB is used."
+        ),
+    )
+    # Attack hyperparameters
+    parser.add_argument("--epsilon",    type=float, default=0.1,
+                        help="Maximum perturbation magnitude (L-inf).")
+    parser.add_argument("--max_iter",   type=int,   default=10,
+                        help="Maximum attack iterations (PGD / BIM).")
+    parser.add_argument("--batch_size", type=int,   default=32,
+                        help="Batch size for inference during attacks.")
+    parser.add_argument("--n_samples",  type=int,   default=None,
+                        help="Limit number of samples per attack (None = all).")
     args = parser.parse_args()
 
-    # ── 0. Recuperar dataset_id ──────────────────────────────
-    print(f"\n[BD] Buscando dataset '{args.dataset_name}'...")
-    dataset_id = get_dataset_id(args.dataset_name)
-    print(f"     dataset_id = {dataset_id}")
-
-    print("\n══════════════════════════════════════════")
-    print(" FASE 1 — Entrenamiento federado (PySyft)")
-    print("══════════════════════════════════════════")
-
-    training_result = run_syft_pipeline(
-        data_dir  = args.data_dir,
-        model_out = args.model_out,
-        cfg = {
-            "batch_size":  args.batch_size,
-            "epochs":      args.epochs,
-            "lr":          args.lr,
-            "patience":    args.patience,
-            "num_classes": args.num_classes,
-            "seed":        args.seed,
-            "train_ratio": args.train_ratio,
-            "val_ratio":   args.val_ratio,
-        },
-    )
-
-    if training_result.get("status") != "Exito":
-        print("\n[ERROR] El entrenamiento falló:")
-        print(training_result.get("error"))
+    # ── Step 1: resolve result_id ─────────────────────────────────────────
+    try:
+        result_id = resolve_result_id(args.result_id)
+    except ValueError as exc:
+        print(f"\n[ERROR] {exc}")
         sys.exit(1)
 
-    # ── Guardar en BD ────────────────────────────────────────
-    print("\n[BD] Registrando resultados del entrenamiento...")
+    # ── Step 2: retrieve model path from DB ───────────────────────────────
+    try:
+        result_info = get_result_info(result_id)
+    except ValueError as exc:
+        print(f"\n[ERROR] {exc}")
+        sys.exit(1)
 
-    split_id = register_split(
-        dataset_id  = dataset_id,
-        n_train     = training_result["train_samples"],
-        n_val       = training_result["val_samples"],
-        n_test      = training_result["test_samples"],
-        seed        = args.seed,
-        train_ratio = args.train_ratio,
-        val_ratio   = args.val_ratio,
-    )
+    model_path = result_info["model_path"]
 
-    experiment_id = register_experiment(
-        lr          = args.lr,
-        batch_size  = args.batch_size,
-        epochs_max  = args.epochs,
-        patience    = args.patience,
-        description = f"ResNet50 federado | dataset={args.dataset_name}",
-    )
+    print("\n══════════════════════════════════════════════════════")
+    print(f" Attacking result_id={result_id}")
+    print(f"   model_path      : {model_path}")
+    print(f"   best_val_bal_acc: {result_info['best_val_bal_acc']:.4f}")
+    print(f"   test_bal_acc    : {result_info['test_bal_acc']:.4f}")
+    print("══════════════════════════════════════════════════════")
 
-    es_id = register_experiment_split(experiment_id, split_id)
-
-    result_id = register_training_result(
-        model_path       = training_result["model_path"],
-        best_epoch       = training_result["best_epoch"],
-        best_val_bal_acc = training_result["best_val_bal_acc"],
-        test_bal_acc     = training_result["test_bal_acc"],
-        test_precision   = training_result["test_precision"],
-        test_recall      = training_result["test_recall"],
-    )
-
-    link_result_to_es(es_id, result_id)
-
-    print(f"     split_id      = {split_id}")
-    print(f"     experiment_id = {experiment_id}")
-    print(f"     es_id         = {es_id}")
-    print(f"     result_id     = {result_id}")
-
-    if args.skip_attacks:
-        print("\n[INFO] Fase de ataques omitida (--skip_attacks).")
-        print("\nPipeline completado.")
-        return
-
-    print("\n══════════════════════════════════════════")
-    print(" FASE 2 — Ataques adversarios (ART)")
-    print("══════════════════════════════════════════")
-
+    # ── Step 3: define attacks ────────────────────────────────────────────
     attacks = [
         {
-            "attack_type": "fgsm",
-            "epsilon":     args.epsilon,
-            "eps_step":    None,
-            "max_iter":    args.max_iter,
+            "attack_type":     "fgsm",
+            "epsilon":         args.epsilon,
+            "eps_step":        None,
+            "max_iter":        args.max_iter,
             "num_random_init": 1,
         },
         {
-            "attack_type": "pgd",
-            "epsilon":     args.epsilon,
-            "eps_step":    args.epsilon / 4,
-            "max_iter":    args.max_iter,
+            "attack_type":     "pgd",
+            "epsilon":         args.epsilon,
+            "eps_step":        args.epsilon / 4,
+            "max_iter":        args.max_iter,
             "num_random_init": 1,
         },
         {
-            "attack_type": "bim",
-            "epsilon":     args.epsilon,
-            "eps_step":    args.epsilon / 4,
-            "max_iter":    args.max_iter,
+            "attack_type":     "bim",
+            "epsilon":         args.epsilon,
+            "eps_step":        args.epsilon / 4,
+            "max_iter":        args.max_iter,
             "num_random_init": 1,
         },
     ]
 
+    # ── Step 4: run and persist each attack ───────────────────────────────
+    print("\n══════════════════════════════════════════════════════")
+    print(" PHASE 2 -- Adversarial attacks (ART)")
+    print("══════════════════════════════════════════════════════")
+
     for atk in attacks:
         atype = atk["attack_type"].upper()
-        print(f"\n── Ataque {atype} ──────────────────────────")
+        print(f"\n-- Attack {atype} -------------------------------------------")
         try:
             metrics = run_attack(
                 data_dir        = args.data_dir,
-                model_path      = training_result["model_path"],
+                model_path      = model_path,
                 attack_type     = atk["attack_type"],
                 epsilon         = atk["epsilon"],
                 eps_step        = atk["eps_step"],
@@ -219,17 +184,18 @@ def main():
                 adv_recall      = metrics["adv_recall"],
             )
 
-            print(f"  [BD] AdversarialRun guardado → adv_id={adv_id}")
-            print(f"       Bal-Acc limpio  : {metrics['clean_bal_acc']:.4f}")
-            print(f"       Bal-Acc adverso : {metrics['adv_bal_acc']:.4f}  "
-                  f"(caída={metrics['clean_bal_acc'] - metrics['adv_bal_acc']:.4f})")
+            drop = metrics["clean_bal_acc"] - metrics["adv_bal_acc"]
+            print(f"  [BD] AdversarialRun saved -> adv_id={adv_id}")
+            print(f"       Clean Bal-Acc : {metrics['clean_bal_acc']:.4f}")
+            print(f"       Adv   Bal-Acc : {metrics['adv_bal_acc']:.4f}  "
+                  f"(drop={drop:.4f})")
 
         except Exception as exc:
-            print(f"  [WARN] Ataque {atype} falló y se omite: {exc}")
+            print(f"  [WARN] Attack {atype} failed and was skipped: {exc}")
 
-    print("\n══════════════════════════════════════════")
-    print(" Pipeline completado con éxito")
-    print("══════════════════════════════════════════")
+    print("\n══════════════════════════════════════════════════════")
+    print(" Pipeline completed successfully")
+    print("══════════════════════════════════════════════════════")
 
 
 if __name__ == "__main__":
