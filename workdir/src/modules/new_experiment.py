@@ -10,7 +10,7 @@ import torch
 
 from create_dataset import create_dataset
 from database_access import (
-    register_server, register_experiment, register_experiment_split,
+    register_server, register_attack_experiment, register_experiment_split,
     register_split_server, save_federated_round_results,
 )
 from database_access import get_experiment, get_experiment_splits, get_server, get_dataset
@@ -26,7 +26,7 @@ EVE_INSTITUTION="Eve Place"
 EVE_WEBSITE="www.eveplace.org"
 
 EXP_CONFIG = {
-
+        "name": "training_refuge_rimone_v1",
         "create_dataset" : True,
 
         "datasets" : [ \
@@ -448,14 +448,16 @@ def fl_compute_model(in_models=[],out_model="./model.pth"):
 def main():
 
     # Creaci'on del experimento
-    cfg=EXP_CONFIG["common_training"]
-    experiment_id = register_experiment(
-            eve_model_path=cfg["eve_model_path"],
-            lr=cfg["lr"],
-            batch_size=cfg["batch_size"],
-            epochs_max=cfg["epochs"],
-            patience=cfg["patience"],
-            description=EXP_CONFIG["description"]
+    cfg = EXP_CONFIG["common_training"]
+    experiment_id = register_attack_experiment(
+            name            = EXP_CONFIG["name"],
+            experiment_type = "training",
+            eve_model_path  = cfg["eve_model_path"],
+            lr              = cfg["lr"],
+            batch_size      = cfg["batch_size"],
+            epochs_max      = cfg["epochs"],
+            patience        = cfg["patience"],
+            description     = EXP_CONFIG["description"],
             )
 
     # Creaci'on de datasets

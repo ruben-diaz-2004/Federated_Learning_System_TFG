@@ -66,9 +66,9 @@ from adversarial_attacks import (
 SUPPORTED_VARIANTS = ("rule_based", "rf", "nn", "gb")
 
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # Creación del ataque MIA
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def create_mia(variant: str, classifier: PyTorchClassifier):
     """
@@ -103,9 +103,9 @@ def create_mia(variant: str, classifier: PyTorchClassifier):
     )
 
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # Evaluación de un ataque MIA ya inferido
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def evaluate_mia(inferred_train: np.ndarray,
                  inferred_test: np.ndarray,
@@ -148,7 +148,7 @@ def evaluate_mia(inferred_train: np.ndarray,
     member_rate     = float(np.mean(inferred_train == 1))
     non_member_rate = float(np.mean(inferred_test  == 0))
 
-    print(f"\n  ── Resultados MIA [{variant}] ──────────────────")
+    print(f"\n  -- Resultados MIA [{variant}] ")
     print(f"  MIA Accuracy   : {accuracy:.4f}  "
           f"(baseline aleatorio = 0.5000)")
     print(f"  MIA Precision  : {precision:.4f}")
@@ -181,9 +181,9 @@ def evaluate_mia(inferred_train: np.ndarray,
     }
 
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # Función principal del ataque MIA
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def run_mia(data_dir:    str,
             model_path:  str,
@@ -212,8 +212,8 @@ def run_mia(data_dir:    str,
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Dispositivo: {device}")
 
-    # ── 1. Cargar y dividir dataset ──────────────────────────────────────────
-    print("\n── Cargando dataset ──")
+    # -- 1. Cargar y dividir dataset ------------------------------------------
+    print("\n-- Cargando dataset --")
     data_prep    = Data_Preprocessing(
         data_path=Path(data_dir), prep_batch_size=batch_size
     )
@@ -226,8 +226,8 @@ def run_mia(data_dir:    str,
     train_split.set_transform(HFTransform(ValProcessor()))
     test_split.set_transform(HFTransform(ValProcessor()))
 
-    # ── 2. Convertir a numpy ─────────────────────────────────────────────────
-    print("\n── Extrayendo arrays numpy ──")
+    # -- 2. Convertir a numpy -------------------------------------------------
+    print("\n-- Extrayendo arrays numpy --")
     x_train, y_train = dataset_to_numpy(train_split, batch_size)
     x_test,  y_test  = dataset_to_numpy(test_split,  batch_size)
 
@@ -246,8 +246,8 @@ def run_mia(data_dir:    str,
 
     print(f"  x_train: {x_train.shape}  x_test: {x_test.shape}")
 
-    # ── 3. Cargar modelo y construir clasificador ART ────────────────────────
-    print("\n── Cargando modelo ──")
+    # -- 3. Cargar modelo y construir clasificador ART ------------------------
+    print("\n-- Cargando modelo --")
     model = build_resnet50(num_classes=2, pretrained=False).to(device)
     model.load_state_dict(
         torch.load(model_path, map_location=device, weights_only=True)
@@ -256,8 +256,8 @@ def run_mia(data_dir:    str,
 
     classifier = build_art_classifier(model, device)
 
-    # ── 4. Crear y (opcionalmente) entrenar el atacante ──────────────────────
-    print(f"\n── Configurando ataque MIA [{variant}] ──")
+    # -- 4. Crear y (opcionalmente) entrenar el atacante ----------------------
+    print(f"\n-- Configurando ataque MIA [{variant}] --")
     attack, needs_fit = create_mia(variant, classifier)
 
     if needs_fit:
@@ -284,20 +284,20 @@ def run_mia(data_dir:    str,
         x_train_eval, y_train_eval = x_train, y_train
         x_test_eval,  y_test_eval  = x_test,  y_test
 
-    # ── 5. Inferencia de membresía ───────────────────────────────────────────
-    print("\n── Ejecutando inferencia de membresía ──")
+    # -- 5. Inferencia de membresía -------------------------------------------
+    print("\n-- Ejecutando inferencia de membresía --")
     inferred_train = attack.infer(x_train_eval, y_train_eval)
     inferred_test  = attack.infer(x_test_eval,  y_test_eval)
 
-    # ── 6. Métricas ──────────────────────────────────────────────────────────
+    # -- 6. Métricas ----------------------------------------------------------
     metrics = evaluate_mia(inferred_train, inferred_test, variant)
 
     return metrics
 
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # Ejecución de todas las variantes
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def run_all_variants(data_dir:   str,
                      model_path: str,
@@ -344,9 +344,9 @@ def run_all_variants(data_dir:   str,
     return results
 
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # Main
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(

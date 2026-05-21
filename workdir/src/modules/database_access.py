@@ -877,3 +877,455 @@ def get_dataset(dataset_id : int) -> dict:
         column_names=[f[0] for f in cur.description]
         data=dict((field,row[n]) for (n,field) in enumerate(column_names))
         return data
+    
+
+"""
+New workflow for a non-training experiment (e.g. adversarial attack):
+
+    1. Register the experiment with a name and type:
+          exp_id = register_attack_experiment(
+              name="adv_pgd_refuge_s42",
+              experiment_type="adversarial",
+              description="PGD attack on refuge model, seed 42",
+          )
+
+    2. Store the attack-specific hyperparameters:
+          register_adversarial_experiment_params(
+              experiment_id=exp_id,
+              attack_types="fgsm,pgd,bim",
+              epsilon=0.1,
+              max_iter=10,
+          )
+
+    3. Link each split to the experiment:
+          es_id = register_experiment_split(exp_id, split_id)
+
+    4. At runtime, look up the experiment and its splits:
+          exp   = get_experiment_by_name("adv_pgd_refuge_s42")
+          params = get_adversarial_experiment_params(exp["experiment_id"])
+          splits = get_experiment_splits(exp["experiment_id"])
+
+    5. For each server/split run the attack and persist results:
+          result_id = <result already linked to the split from training>
+          adv_id = register_adversarial_run(result_id=result_id, ...)
+
+    6. Statistical analysis can then be done per server independently
+       because each server has its own splits linked to its own result_id.
+"""
+
+# =============================================================================
+# Experiment registration (with name and type)
+# =============================================================================
+
+def register_attack_experiment(
+        name: str,
+        experiment_type: str,
+        description: str = None,
+        lr: float = 0.0,
+        batch_size: int = 0,
+        epochs_max: int = 0,
+        patience: int = 0,
+        eve_model_path: str = None,
+) -> int:
+    """
+    Create an Experiment row of any type and return experiment_id.
+
+    For non-training experiments (adversarial, mia, backdoor) the training
+    hyperparameters lr/batch_size/epochs_max/patience are not meaningful;
+    they default to 0 so existing NOT NULL constraints are satisfied.
+
+    Parameters
+    ----------
+    name : str
+        Unique short label for the experiment.  Used to retrieve it later with
+        get_experiment_by_name().
+    experiment_type : str
+        One of: 'training', 'adversarial', 'mia', 'backdoor'.
+    description : str, optional
+        Free-text description.
+
+    Returns
+    -------
+    experiment_id : int
+
+    Example
+    -------
+        exp_id = register_attack_experiment(
+            name="adv_fgsm_rimone_s0",
+            experiment_type="adversarial",
+            description="FGSM attack on RIMONE split seed=0",
+        )
+    """
+    allowed = {"training", "adversarial", "mia", "backdoor"}
+    if experiment_type not in allowed:
+        raise ValueError(
+            f"experiment_type must be one of {allowed}, got '{experiment_type}'"
+        )
+    sql = """
+        INSERT INTO Experiment
+            (name, experiment_type, description,
+             lr, batch_size, epochs_max, patience, eve_model_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (
+            name, experiment_type, description,
+            lr, batch_size, epochs_max, patience, eve_model_path,
+        ))
+        return cur.lastrowid
+
+
+# =============================================================================
+# Lookup by name
+# =============================================================================
+
+def get_experiment_by_name(name: str) -> dict:
+    """
+    Return the full Experiment row for a given name.
+
+    Raises ValueError if the name does not exist.
+
+    Example
+    -------
+        exp = get_experiment_by_name("adv_fgsm_rimone_s0")
+        exp_type = exp["experiment_type"]   # "adversarial"
+        exp_id   = exp["experiment_id"]
+    """
+    sql = "SELECT * FROM Experiment WHERE name = %s"
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (name,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"No Experiment found with name='{name}'.")
+    return dict(row)
+
+
+def list_experiments(experiment_type: str = None) -> list:
+    """
+    Return all experiments, optionally filtered by type.
+
+    Parameters
+    ----------
+    experiment_type : str or None
+        If given, only experiments of that type are returned.
+
+    Example
+    -------
+        all_exps = list_experiments()
+        adv_exps = list_experiments("adversarial")
+    """
+    if experiment_type is not None:
+        sql = """
+            SELECT experiment_id, name, experiment_type, description
+            FROM Experiment
+            WHERE experiment_type = %s
+            ORDER BY experiment_id DESC
+        """
+        params = (experiment_type,)
+    else:
+        sql = """
+            SELECT experiment_id, name, experiment_type, description
+            FROM Experiment
+            ORDER BY experiment_id DESC
+        """
+        params = ()
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+# =============================================================================
+# AdversarialExperimentParams
+# =============================================================================
+
+def register_adversarial_experiment_params(
+        experiment_id: int,
+        attack_types: str = "fgsm,pgd,bim",
+        epsilon: float = 0.1,
+        eps_step: float = None,
+        max_iter: int = 10,
+        num_random_init: int = 1,
+        n_samples: int = None,
+        batch_size: int = 32,
+) -> int:
+    """
+    Store the hyperparameters for an adversarial attack experiment.
+
+    Call this right after register_attack_experiment() when
+    experiment_type='adversarial'.
+
+    Parameters
+    ----------
+    experiment_id : int
+        Must already exist in Experiment with experiment_type='adversarial'.
+    attack_types : str
+        Comma-separated list, e.g. 'fgsm,pgd,bim' or just 'pgd'.
+    epsilon : float
+        L-inf perturbation budget.
+    eps_step : float or None
+        Step size for PGD/BIM.  If None the runner should use epsilon/4.
+    max_iter : int
+        Maximum attack iterations.
+    num_random_init : int
+        Random restarts for PGD.
+    n_samples : int or None
+        Cap on samples per attack; None means use all available.
+    batch_size : int
+        Inference batch size during the attack.
+
+    Returns
+    -------
+    adv_exp_id : int
+
+    Example
+    -------
+        register_adversarial_experiment_params(
+            experiment_id=exp_id,
+            attack_types="fgsm,pgd,bim",
+            epsilon=0.05,
+            max_iter=20,
+        )
+    """
+    sql = """
+        INSERT INTO AdversarialExperimentParams
+            (experiment_id, attack_types, epsilon, eps_step, max_iter,
+             num_random_init, n_samples, batch_size)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (
+            experiment_id, attack_types, epsilon, eps_step, max_iter,
+            num_random_init, n_samples, batch_size,
+        ))
+        return cur.lastrowid
+
+
+def get_adversarial_experiment_params(experiment_id: int) -> dict:
+    """
+    Return the AdversarialExperimentParams row for the given experiment.
+
+    Raises ValueError if not found.
+
+    Example
+    -------
+        params = get_adversarial_experiment_params(exp_id)
+        attacks = params["attack_types"].split(",")   # ["fgsm", "pgd", "bim"]
+        epsilon = params["epsilon"]
+    """
+    sql = """
+        SELECT * FROM AdversarialExperimentParams
+        WHERE experiment_id = %s
+    """
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (experiment_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"No AdversarialExperimentParams for experiment_id={experiment_id}."
+        )
+    return dict(row)
+
+
+# =============================================================================
+# MiaExperimentParams
+# =============================================================================
+
+def register_mia_experiment_params(
+        experiment_id: int,
+        variants: str = "all",
+        test_size: float = 0.5,
+        n_shadow_samples: int = None,
+) -> int:
+    """
+    Store the hyperparameters for a membership inference attack experiment.
+
+    Parameters
+    ----------
+    experiment_id : int
+        Must already exist in Experiment with experiment_type='mia'.
+    variants : str
+        Comma-separated MIA variants or 'all'.
+    test_size : float
+        Fraction of shadow data used as MIA test set.
+    n_shadow_samples : int or None
+        Number of shadow samples to use; None means all available.
+
+    Returns
+    -------
+    mia_exp_id : int
+
+    Example
+    -------
+        register_mia_experiment_params(
+            experiment_id=exp_id,
+            variants="rf,nn",
+            test_size=0.3,
+        )
+    """
+    sql = """
+        INSERT INTO MiaExperimentParams
+            (experiment_id, variants, test_size, n_shadow_samples)
+        VALUES (%s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (experiment_id, variants, test_size, n_shadow_samples))
+        return cur.lastrowid
+
+
+def get_mia_experiment_params(experiment_id: int) -> dict:
+    """
+    Return the MiaExperimentParams row for the given experiment.
+
+    Raises ValueError if not found.
+
+    Example
+    -------
+        params = get_mia_experiment_params(exp_id)
+        variants = params["variants"]   # "rf,nn"
+    """
+    sql = "SELECT * FROM MiaExperimentParams WHERE experiment_id = %s"
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (experiment_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"No MiaExperimentParams for experiment_id={experiment_id}."
+        )
+    return dict(row)
+
+
+# =============================================================================
+# BackdoorExperimentParams
+# =============================================================================
+
+def register_backdoor_experiment_params(
+        experiment_id: int,
+        trigger_type: str = "square",
+        percent_poison: float = 0.1,
+        source_class: int = 0,
+        target_class: int = 1,
+        trigger_size: int = None,
+        trigger_position: str = None,
+        check_all_classes: bool = False,
+) -> int:
+    """
+    Store the hyperparameters for a backdoor attack experiment.
+
+    Parameters
+    ----------
+    experiment_id : int
+        Must already exist in Experiment with experiment_type='backdoor'.
+    trigger_type : str
+        Type of trigger: 'square', 'sinusoidal', etc.
+    percent_poison : float
+        Fraction of training data that is poisoned.
+    source_class : int
+        Original class of poisoned samples.
+    target_class : int
+        Class that poisoned samples are mislabelled as.
+    trigger_size : int or None
+        Patch size for localized triggers; None for global triggers.
+    trigger_position : str or None
+        Corner/position for the patch; None for global triggers.
+    check_all_classes : bool
+        Whether Activation Clustering checks all classes or only target_class.
+
+    Returns
+    -------
+    bd_exp_id : int
+
+    Example
+    -------
+        register_backdoor_experiment_params(
+            experiment_id=exp_id,
+            trigger_type="square",
+            percent_poison=0.2,
+            trigger_size=8,
+            trigger_position="bottom-right",
+        )
+    """
+    sql = """
+        INSERT INTO BackdoorExperimentParams
+            (experiment_id, trigger_type, trigger_size, trigger_position,
+             percent_poison, source_class, target_class, check_all_classes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (
+            experiment_id, trigger_type, trigger_size, trigger_position,
+            percent_poison, source_class, target_class,
+            int(check_all_classes),
+        ))
+        return cur.lastrowid
+
+
+def get_backdoor_experiment_params(experiment_id: int) -> dict:
+    """
+    Return the BackdoorExperimentParams row for the given experiment.
+
+    Raises ValueError if not found.
+
+    Example
+    -------
+        params = get_backdoor_experiment_params(exp_id)
+        trigger = params["trigger_type"]   # "square"
+    """
+    sql = "SELECT * FROM BackdoorExperimentParams WHERE experiment_id = %s"
+    with get_db() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(sql, (experiment_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"No BackdoorExperimentParams for experiment_id={experiment_id}."
+        )
+    return dict(row)
+
+
+# =============================================================================
+# Convenience: resolve result_id for a split inside an attack experiment
+# =============================================================================
+
+def get_result_id_for_split(experiment_id: int, split_id: int) -> int:
+    """
+    Return the result_id linked to a specific (experiment_id, split_id) pair.
+
+    For non-training experiments the split was created by a prior training
+    experiment; the attack experiment links to the same split and its
+    existing result_id is retrieved here.
+
+    Raises ValueError if ExperimentSplit row not found or result_id is NULL.
+
+    Example
+    -------
+        result_id = get_result_id_for_split(adv_exp_id, split_id)
+        info = get_result_info(result_id)
+        model_path = info["model_path"]
+    """
+    sql = """
+        SELECT result_id FROM ExperimentSplit
+        WHERE experiment_id = %s AND split_id = %s
+    """
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, (experiment_id, split_id))
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(
+            f"No ExperimentSplit found for experiment_id={experiment_id}, "
+            f"split_id={split_id}."
+        )
+    if row[0] is None:
+        raise ValueError(
+            f"ExperimentSplit(experiment_id={experiment_id}, split_id={split_id}) "
+            "has result_id=NULL. Link a TrainingResult first via link_result_to_es()."
+        )
+    return row[0]
